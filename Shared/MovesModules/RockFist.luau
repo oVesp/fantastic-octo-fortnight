@@ -3,7 +3,7 @@ local RockFist = {
 	id = "RockFist",
 	name = "RockFist",
 	rarity = "Amateur",
-	power = 0,
+        power = 22,
 	cooldown = 1.2,
 	minRange = 0,
 	maxRange = 6,
@@ -11,7 +11,7 @@ local RockFist = {
 	castSpeed = 1.0,
 	lockMovement = true,
 	effects = {},
-	tags = {"Melee", "Universal"},
+        tags = {"Melee", "Universal"},
 
 	-- Overrides específicos para este movimento
 	accuracy = 0.96,
