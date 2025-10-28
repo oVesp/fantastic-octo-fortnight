@@ -84,16 +84,25 @@ function MoveLearning.ReplaceMove(player, moveToRemove, moveToAdd)
 	if not data or not data.Moves then return false end
 
 	-- Find and remove the specified move
-	for i, moveData in ipairs(data.Moves) do
-		local moveId = moveData.move and moveData.move.id or moveData.id
-		if moveId == moveToRemove then
-			table.remove(data.Moves, i)
+        for i, moveData in ipairs(data.Moves) do
+                local moveId = nil
+                if typeof(moveData) == "table" then
+                        moveId = moveData.id or (moveData.move and moveData.move.id)
+                elseif typeof(moveData) == "string" then
+                        moveId = moveData
+                end
 
-			-- Add new move
-			local Moves = require(RS.Modules.Moves)
-			local newMove = Moves:GetMove(data.Race, moveToAdd) or Moves:GetMove(nil, moveToAdd)
-			if newMove then
-				table.insert(data.Moves, { move = newMove, rarity = newMove.rarity })
+                if moveId == moveToRemove then
+                        table.remove(data.Moves, i)
+
+                        -- Add new move
+                        local Moves = require(RS.Modules.Moves)
+                        local newMove = Moves:GetMove(data.Race, moveToAdd) or Moves:GetMove(nil, moveToAdd)
+                        if newMove then
+                                table.insert(data.Moves, {
+                                        id = newMove.id,
+                                        rarity = newMove.rarity,
+                                })
 
 				-- Trim to max 4 moves if needed
 				if #data.Moves > 4 then
@@ -116,20 +125,38 @@ function MoveLearning.TrimMoves(data)
 	local RARITY_ORDER = { Amateur = 1, Advanced = 2, Specialist = 3, Ascended = 4, Primordial = 5 }
 
 	-- Sort by priority: BasicAttack always kept, then by rarity
-	table.sort(data.Moves, function(a, b)
-		local aId = a.move and a.move.id or a.id
-		local bId = b.move and b.move.id or b.id
+        table.sort(data.Moves, function(a, b)
+                local aId = nil
+                if typeof(a) == "table" then
+                        aId = a.id or (a.move and a.move.id)
+                elseif typeof(a) == "string" then
+                        aId = a
+                end
 
-		-- BasicAttack has highest priority
-		if aId == "BasicAttack" then return true end
-		if bId == "BasicAttack" then return false end
+                local bId = nil
+                if typeof(b) == "table" then
+                        bId = b.id or (b.move and b.move.id)
+                elseif typeof(b) == "string" then
+                        bId = b
+                end
 
-		-- Then sort by rarity
-		local aRarity = a.rarity or (a.move and a.move.rarity) or "Amateur"
-		local bRarity = b.rarity or (b.move and b.move.rarity) or "Amateur"
+                -- BasicAttack has highest priority
+                if aId == "BasicAttack" then return true end
+                if bId == "BasicAttack" then return false end
 
-		return (RARITY_ORDER[aRarity] or 1) > (RARITY_ORDER[bRarity] or 1)
-	end)
+                -- Then sort by rarity
+                local aRarity = "Amateur"
+                if typeof(a) == "table" then
+                        aRarity = a.rarity or (a.move and a.move.rarity) or "Amateur"
+                end
+
+                local bRarity = "Amateur"
+                if typeof(b) == "table" then
+                        bRarity = b.rarity or (b.move and b.move.rarity) or "Amateur"
+                end
+
+                return (RARITY_ORDER[aRarity] or 1) > (RARITY_ORDER[bRarity] or 1)
+        end)
 
 	-- Remove excess moves (keep only first 4)
 	while #data.Moves > 4 do
@@ -140,13 +167,18 @@ end
 -- Get current moves in standardized format
 function MoveLearning.GetCurrentMoves(data)
 	local moves = {}
-	for _, moveData in ipairs(data.Moves or {}) do
-		local moveId = moveData.move and moveData.move.id or moveData.id
-		if moveId then
-			table.insert(moves, moveId)
-		end
-	end
-	return moves
+        for _, moveData in ipairs(data.Moves or {}) do
+                local moveId = nil
+                if typeof(moveData) == "table" then
+                        moveId = moveData.id or (moveData.move and moveData.move.id)
+                elseif typeof(moveData) == "string" then
+                        moveId = moveData
+                end
+                if moveId then
+                        table.insert(moves, moveId)
+                end
+        end
+        return moves
 end
 
 return MoveLearning

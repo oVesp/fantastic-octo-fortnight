@@ -836,17 +836,27 @@ local function grantMove(playerData, moveId, sourceTag)
 	if not mv then return false end
 
 	playerData.Moves = playerData.Moves or {}
-	local seen = {}
-	for _,e in ipairs(playerData.Moves) do
-		local id = (e.move and e.move.id) or e.id
-		if id then seen[id] = true end
-	end
+        local seen = {}
+        for _, entry in ipairs(playerData.Moves) do
+                local id = nil
+                if typeof(entry) == "table" then
+                        id = entry.id or (entry.move and entry.move.id)
+                elseif typeof(entry) == "string" then
+                        id = entry
+                end
+                if id then
+                        seen[id] = true
+                end
+        end
 
-	if not seen[mv.id] then
-		table.insert(playerData.Moves, { move = mv, rarity = mv.rarity })
-		-- Trim to max 4 moves, keeping the most recent
-		if #playerData.Moves > 4 then
-			table.remove(playerData.Moves, 1)
+        if not seen[mv.id] then
+                table.insert(playerData.Moves, {
+                        id = mv.id,
+                        rarity = mv.rarity,
+                })
+                -- Trim to max 4 moves, keeping the most recent
+                if #playerData.Moves > 4 then
+                        table.remove(playerData.Moves, 1)
 		end
 	end
 	return true

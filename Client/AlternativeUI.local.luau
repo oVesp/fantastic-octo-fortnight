@@ -2,8 +2,11 @@
 --// Designed for All Ages — Soft Colors, Rounded Corners, Clear Sections
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+local MovesModule = require(ReplicatedStorage.Modules.Moves)
 
 -- Create ScreenGui
 local screenGui = Instance.new("ScreenGui")
@@ -186,8 +189,15 @@ end
 
 -- Function to create move display
 local function createMoveRow(parent, moveData)
-	local move = moveData.move
-	local rarity = moveData.rarity or move.rarity or "Unknown"
+        local moveId = nil
+        if typeof(moveData) == "table" then
+                moveId = moveData.id or (moveData.move and moveData.move.id)
+        elseif typeof(moveData) == "string" then
+                moveId = moveData
+        end
+
+        local move = (moveId and MovesModule:GetMove(nil, moveId)) or {}
+        local rarity = (typeof(moveData) == "table" and moveData.rarity) or move.rarity or "Unknown"
 
 	local row = Instance.new("Frame")
 	row.Size = UDim2.new(1, -20, 0, 40)
@@ -205,7 +215,7 @@ local function createMoveRow(parent, moveData)
 	nameLabel.Size = UDim2.new(1, -80, 0, 20)
 	nameLabel.Position = UDim2.new(0, 10, 0, 4)
 	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = move.name or "Unnamed Move"
+        nameLabel.Text = move.name or moveId or "Unnamed Move"
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	nameLabel.TextSize = 14
@@ -263,10 +273,10 @@ local monsterData = {
 	},
 
 	-- Moves
-	Moves = {
-		{ move = { id = "BasicAttack", name = "Basic Attack", rarity = "Amateur" }, rarity = "Amateur" },
-		{ move = { id = "SparkleBlast", name = "Sparkle Blast", rarity = "Rare" }, rarity = "Rare" }
-	},
+        Moves = {
+                { id = "BasicAttack", rarity = "Amateur" },
+                { id = "SparkleBlast", rarity = "Rare" }
+        },
 	LearnedMoves = {},
 
 	-- History & Metadata

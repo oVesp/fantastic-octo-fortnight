@@ -310,17 +310,23 @@ function module.BuildMonster(monsterData, ownerId, options)
 		end
 	end)
 
-	if monsterData.Moves then
-		--print(monsterData, monsterData.Moves, monsterData.Monster)
-		local moveCount = 0
-		for i, moveInfo in (monsterData.Moves) do
-			if moveInfo and moveInfo.move then
-				monsterModel:SetAttribute("Move" .. i, moveInfo.move.id or moveInfo.move.name)
-				moveCount = moveCount + 1
-			end
-		end
-		monsterModel:SetAttribute("MoveCount", moveCount)
-	end
+        if monsterData.Moves then
+                local moveCount = 0
+                for i, moveInfo in (monsterData.Moves) do
+                        local moveId: string? = nil
+                        if typeof(moveInfo) == "table" then
+                                moveId = moveInfo.id or (moveInfo.move and moveInfo.move.id)
+                        elseif typeof(moveInfo) == "string" then
+                                moveId = moveInfo
+                        end
+
+                        if moveId and moveId ~= "" then
+                                monsterModel:SetAttribute("Move" .. i, moveId)
+                                moveCount += 1
+                        end
+                end
+                monsterModel:SetAttribute("MoveCount", moveCount)
+        end
 
 	if humanoid then
 		humanoid.MaxHealth = stats.Hp or 100
