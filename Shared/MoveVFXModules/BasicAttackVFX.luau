@@ -426,8 +426,11 @@ function Moves:getStarterMoves(race)
 			-- Handle both string move names and structured move data
 			if type(moveName) == "string" then
 				local moveData = Moves:GetMove(race, moveName)
-				if moveData then
-					table.insert(moves, {move = moveData, rarity = "Amateur"})
+                                if moveData then
+                                        table.insert(moves, {
+                                                id = moveData.id,
+                                                rarity = "Amateur",
+                                        })
 				end
 			elseif moveName.move then
 				-- Already in correct format
@@ -441,8 +444,11 @@ function Moves:getStarterMoves(race)
 
 	-- Ultimate fallback: just basic attack
 	local basicAttack = Moves:GetMove(race, "BasicAttack")
-	if basicAttack then
-		return {{move = basicAttack, rarity = "Amateur"}}
+        if basicAttack then
+                return {{
+                        id = basicAttack.id,
+                        rarity = "Amateur",
+                }}
 	end
 
 	return {}
@@ -476,8 +482,11 @@ function Moves:GetRandomMoves(race: string, count: number?, minRarity: string?, 
 		if not bucket or #bucket == 0 then
 			bucket = byRarity["Amateur"]
 		end
-		local mv = bucket[math.random(1, math.max(1, #bucket))] or MOVES.BasicAttack
-		picked[i] = { move = mv, rarity = mv.rarity }
+                local mv = bucket[math.random(1, math.max(1, #bucket))] or MOVES.BasicAttack
+                picked[i] = {
+                        id = mv.id,
+                        rarity = mv.rarity,
+                }
 	end
 	return picked
 end

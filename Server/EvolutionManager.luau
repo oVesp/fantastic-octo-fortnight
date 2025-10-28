@@ -328,61 +328,65 @@ end
 local MAX_MOVES = 4
 
 local function toMoveObj(entry)
-	if not entry then return nil end
-	if typeof(entry) == "string" then
-		local mv = Moves:GetMove(nil, entry)
-		return mv and { move = mv, rarity = mv.rarity } or nil
-	elseif typeof(entry) == "table" then
-		if entry.move and entry.move.id then return { move = entry.move, rarity = entry.rarity or entry.move.rarity } end
-		if entry.id then return { move = entry, rarity = entry.rarity} end
-	end
-	return nil
+        if not entry then return nil end
+        if typeof(entry) == "string" then
+                return { id = entry, rarity = "Amateur" }
+        elseif typeof(entry) == "table" then
+                if entry.id then
+                        return { id = entry.id, rarity = entry.rarity or "Amateur" }
+                elseif entry.move and entry.move.id then
+                        return { id = entry.move.id, rarity = entry.rarity or entry.move.rarity or "Amateur" }
+                end
+        end
+        return nil
 end
 
 local function dedupe(list)
-	local seen, out = {}, {}
-	for _, e in ipairs(list or {}) do
-		local obj = toMoveObj(e)
-		if obj and obj.move and obj.move.id and not seen[obj.move.id] then
-			table.insert(out, obj); seen[obj.move.id] = true
-		end
-	end
-	return out
+        local seen, out = {}, {}
+        for _, e in ipairs(list or {}) do
+                local obj = toMoveObj(e)
+                if obj and obj.id and not seen[obj.id] then
+                        table.insert(out, obj)
+                        seen[obj.id] = true
+                end
+        end
+        return out
 end
 
 local function ensureBasicAttack(list)
-	for _, e in ipairs(list) do if e.move.id == "BasicAttack" then return end end
-	local ba = Moves:GetMove(nil, "BasicAttack")
-	if ba then table.insert(list, { move = ba, rarity = ba.rarity }) end
+        for _, e in ipairs(list) do
+                if e.id == "BasicAttack" then
+                        return
+                end
+        end
+        table.insert(list, { id = "BasicAttack", rarity = "Amateur" })
 end
 
 local function trimToMax(list, maxCount)
-	if #list <= maxCount then return list end
+        if #list <= maxCount then return list end
 
-	-- Sort priority:
-	-- 1. BasicAttack always kept (highest priority)
-	-- 2. Highest rarity moves kept
-	-- 3. In case of tie, keep newer moves (later in list)
-	table.sort(list, function(a,b)
-		-- BasicAttack always comes first
-		if a.move.id == "BasicAttack" and b.move.id ~= "BasicAttack" then return true end
-		if b.move.id == "BasicAttack" and a.move.id ~= "BasicAttack" then return false end
+        -- Sort priority:
+        -- 1. BasicAttack always kept (highest priority)
+        -- 2. Highest rarity moves kept
+        -- 3. In case of tie, keep newer moves (later in list)
+        table.sort(list, function(a, b)
+                if a.id == "BasicAttack" and b.id ~= "BasicAttack" then return true end
+                if b.id == "BasicAttack" and a.id ~= "BasicAttack" then return false end
 
-		-- Compare by rarity
-		local aScore = rarityScore(a)
-		local bScore = rarityScore(b)
-		if aScore ~= bScore then
-			return aScore > bScore
-		end
+                local aScore = rarityScore(a)
+                local bScore = rarityScore(b)
+                if aScore ~= bScore then
+                        return aScore > bScore
+                end
 
-		-- If same rarity, keep the one that appears later (newer)
-		-- We don't have timestamps, so this is best effort
-		return false
-	end)
+                return false
+        end)
 
-	local cut = {}
-	for i=1, maxCount do cut[i] = list[i] end
-	return dedupe(cut)
+        local cut = {}
+        for i = 1, maxCount do
+                cut[i] = list[i]
+        end
+        return dedupe(cut)
 end
 
 -- In EvolutionManager.CompleteEvolution function, update the move handling:
@@ -452,17 +456,34 @@ local function mergeMovesKeepingOld(prevMoves, startersAnyFormat, newRace)
 end
 
 local function chooseInherited(prevMoves)
-	-- pick by highest rarity, or your own heuristic
-	local order = {Amateur=1, Advanced=2, Specialist=3, Ascended=4, Primordial=5}
-	local best, bestScore = nil, -1
-	for _, e in ipairs(prevMoves or {}) do
-		local mv = e.move or e
-		local s = order[(e.rarity or mv.rarity or "Amateur")] or 1
-		if mv and mv.id ~= "BasicAttack" and s > bestScore then
-			best = mv; bestScore = s
-		end
-	end
-	return best
+        local order = {Amateur = 1, Advanced = 2, Specialist = 3, Ascended = 4, Primordial = 5}
+        local bestId, bestScore = nil, -1
+
+        for _, entry in ipairs(prevMoves or {}) do
+                local moveId = nil
+                local rarity = "Amateur"
+
+                if typeof(entry) == "table" then
+                        moveId = entry.id or (entry.move and entry.move.id)
+                        rarity = entry.rarity or (entry.move and entry.move.rarity) or "Amateur"
+                elseif typeof(entry) == "string" then
+                        moveId = entry
+                end
+
+                if moveId and moveId ~= "BasicAttack" then
+                        local score = order[rarity] or 1
+                        if score > bestScore then
+                                bestId = moveId
+                                bestScore = score
+                        end
+                end
+        end
+
+        if bestId then
+                return Moves:GetMove(nil, bestId)
+        end
+
+        return nil
 end
 
 -- Aplica a evolução de fato (atualiza dados, reconstrói, reposiciona, notifica)

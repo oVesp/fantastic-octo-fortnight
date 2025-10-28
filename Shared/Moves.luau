@@ -307,20 +307,26 @@ function Moves:GetRandomMoves(race, count, minRarity, weightsOverride)
 			bucket = byRarity["Amateur"]
 		end
 
-		local move = bucket[math.random(1, math.max(1, #bucket))] or MOVES.BasicAttack
-		picked[i] = {move = move, rarity = move.rarity}
-	end
+                local move = bucket[math.random(1, math.max(1, #bucket))] or MOVES.BasicAttack
+                picked[i] = {
+                        id = move.id,
+                        rarity = move.rarity,
+                }
+        end
 
-	return picked
+        return picked
 end
 
 function Moves:getStarterMoves(race)
-	-- Implementação simplificada - em produção, integrar com EvolutionDefs
-	local basicAttack = self:GetMove(race, "BasicAttack")
-	if basicAttack then
-		return {{move = basicAttack, rarity = "Amateur"}}
-	end
-	return {}
+        -- Implementação simplificada - em produção, integrar com EvolutionDefs
+        local basicAttack = self:GetMove(race, "BasicAttack")
+        if basicAttack then
+                return {{
+                        id = basicAttack.id,
+                        rarity = "Amateur",
+                }}
+        end
+        return {}
 end
 
 -- Exportar constantes
