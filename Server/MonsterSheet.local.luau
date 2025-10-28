@@ -1,4 +1,4 @@
--- LocalScript: monsterSheet
+-- LocalScript: PlayerGui -> MonsterSheetUI - MonsterSheet.local.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
