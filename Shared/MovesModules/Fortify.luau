@@ -10,8 +10,8 @@ local Fortify = {
 	castTime = 0.4,
 	castSpeed = 1.0,
 	lockMovement = true,
-	effects = {},
-	tags = {"Buff"},
+        effects = {"BuffSelf", "FortifyAura"},
+        tags = {"Buff", "Defensive", "Construct"},
 
 	-- Overrides específicos para este movimento
 	accuracy = 0.96,

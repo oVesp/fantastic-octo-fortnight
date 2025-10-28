@@ -750,7 +750,7 @@ function CombatManager.ProcessParticipantState(participant, combatData, currentT
 			return
 		end
 
-		if plan.type == "attack" and plan.move then
+                if plan.type == "attack" and plan.move then
 			-- FIXED RANGE CHECK: Allow close-range moves to execute
 			local minRange = plan.move.minRange or 0
 			local maxRange = plan.move.maxRange or 999
@@ -763,11 +763,11 @@ function CombatManager.ProcessParticipantState(participant, combatData, currentT
 
 			local inRange = inRange(participant.instance, plan.target, effectiveMinRange, maxRange)
 
-			if inRange then
-				-- CLOSE ENOUGH: Execute attack even if not at perfect desired range
-				setTacticalState(participant, "CASTING")
-				EnhancedMovement.FaceTarget(participant, plan.target)
-				task.spawn(CombatManager.ExecuteTacticalMove, participant, plan.move, combatData)
+                        if inRange then
+                                -- CLOSE ENOUGH: Execute attack even if not at perfect desired range
+                                setTacticalState(participant, "CASTING")
+                                EnhancedMovement.FaceTarget(participant.instance, plan.target)
+                                task.spawn(CombatManager.ExecuteTacticalMove, participant, plan.move, combatData, plan.target, plan.targetParticipant)
 
 			elseif stateDuration > STATE_DURATIONS.positioning then
 				-- POSITIONING FAILED: Try a close-range approach
@@ -787,22 +787,28 @@ function CombatManager.ProcessParticipantState(participant, combatData, currentT
 					desiredRange = plan.desiredRange
 				})
 			end
-		else
-			if plan.type == "defend" then
-				-- run the defend action now
-				setTacticalState(participant, "CASTING")
-				task.spawn(function()
-					CombatManager.ExecuteDefend(participant, plan.duration)
-					-- after bracing, go to RESTING
-					setTacticalState(participant, "RESTING")
-					participant.currentPlan = {
-						type = "reposition",
-						intention = "create_distance",
-						duration = math.random(1.0, 2.0)
-					}
-				end)
-				return
-			end
+                else
+                        if plan.type == "defend" then
+                                -- run the defend action now
+                                setTacticalState(participant, "DEFENDING")
+                                task.spawn(function()
+                                        CombatManager.ExecuteDefend(participant, plan.duration)
+                                        -- after bracing, go to RESTING
+                                        setTacticalState(participant, "RESTING")
+                                        participant.currentPlan = {
+                                                type = "reposition",
+                                                intention = "create_distance",
+                                                duration = math.random(1.0, 2.0)
+                                        }
+                                end)
+                                return
+                        elseif plan.type == "utility" and plan.move then
+                                setTacticalState(participant, "CASTING")
+                                local utilityTarget = plan.target or participant.instance
+                                EnhancedMovement.FaceTarget(participant.instance, utilityTarget)
+                                task.spawn(CombatManager.ExecuteTacticalMove, participant, plan.move, combatData, utilityTarget, plan.targetParticipant)
+                                return
+                        end
 			-- Non-attack positioning
 			if stateDuration >= (plan.duration or STATE_DURATIONS.positioning) then
 				setTacticalState(participant, "RESTING")
@@ -915,44 +921,57 @@ function CombatManager.BuildCombatContext(participant, target, combatData)
 end
 
 function CombatManager.ChooseActionPlan(participant, context)
-	local personality = participant.personality
-	local weights = {
-		attack = personality.weights.attack or 40,
-		reposition = personality.weights.reposition or 15,
-		defensive = (personality.weights.defend or 5) + (personality.weights.retreat or 2),
-		utility = (personality.weights.buffSelf or 0) + (personality.weights.debuff or 5)
-	}
+        local personality = participant.personality
+        local weights = {
+                attack = personality.weights.attack or 40,
+                reposition = personality.weights.reposition or 15,
+                defensive = (personality.weights.defend or 5) + (personality.weights.retreat or 2),
+                utility = (personality.weights.buffSelf or 0) + (personality.weights.debuff or 5)
+        }
 
-	-- Context adjustments
-	if context.isPressured then
-		weights.defensive = weights.defensive * 2.5
-		weights.reposition = weights.reposition * 1.8
-	end
+        local utilityOptions = computeUtilityOptions(participant, context)
 
-	if context.canPress then
-		weights.attack = weights.attack * 1.6
-	end
+        -- Context adjustments
+        if context.isPressured then
+                weights.defensive = weights.defensive * 2.5
+                weights.reposition = weights.reposition * 1.8
+        end
 
-	if context.mpRatio < 0.3 then
-		weights.attack = weights.attack * 0.5
-		weights.utility = weights.utility * 0.3
-	end
+        if context.canPress then
+                weights.attack = weights.attack * 1.6
+        end
 
-	-- PREVENT CHASE-RETREAT LOOPS: If very close, prefer attack over reposition
-	if context.distance < 8 then
-		weights.attack = weights.attack * 1.5
-		weights.reposition = weights.reposition * 0.6
-	end
+        if context.mpRatio < 0.3 then
+                weights.attack = weights.attack * 0.5
+                weights.utility = weights.utility * 0.3
+        end
 
-	-- Choose category
-	local choice = _G.FUNCTIONS:Decision(weights)
+        -- PREVENT CHASE-RETREAT LOOPS: If very close, prefer attack over reposition
+        if context.distance < 8 then
+                weights.attack = weights.attack * 1.5
+                weights.reposition = weights.reposition * 0.6
+        end
 
-	-- Build specific plan
-	if choice == "attack" then
-		local move = CombatManager.SelectTacticalMove(participant, context)
-		if move then
-			-- DYNAMIC RANGE: Close-range moves should allow getting closer
-			local desiredRange = move.maxRange * 0.7
+        if #utilityOptions == 0 then
+                weights.utility = math.max(weights.utility * 0.35, 1)
+        else
+                weights.utility = weights.utility * (1 + math.min(#utilityOptions, 3) * 0.35)
+        end
+
+        for key, value in pairs(weights) do
+                local jitter = 0.9 + math.random() * 0.25
+                weights[key] = math.max(0, value * jitter)
+        end
+
+        -- Choose category
+        local choice = _G.FUNCTIONS:Decision(weights)
+
+        -- Build specific plan
+        if choice == "attack" then
+                local move = CombatManager.SelectTacticalMove(participant, context)
+                if move then
+                        -- DYNAMIC RANGE: Close-range moves should allow getting closer
+                        local desiredRange = move.maxRange * 0.7
 			if move.minRange == 0 then
 				-- Close-range/melee moves - get much closer
 				desiredRange = math.max(2, move.maxRange * 0.3)
@@ -961,14 +980,15 @@ function CombatManager.ChooseActionPlan(participant, context)
 				desiredRange = math.max(1.5, move.maxRange * 0.2)
 			end
 
-			return {
-				type = "attack",
-				move = move,
-				target = participant.target.instance,
-				desiredRange = desiredRange,
-				followThrough = true
-			}
-		else
+                        return {
+                                type = "attack",
+                                move = move,
+                                target = participant.target and participant.target.instance,
+                                targetParticipant = participant.target,
+                                desiredRange = desiredRange,
+                                followThrough = true
+                        }
+                else
 			-- Fallback to reposition if no moves available
 			return {
 				type = "reposition", 
@@ -976,7 +996,7 @@ function CombatManager.ChooseActionPlan(participant, context)
 				duration = math.random(1.5, 2.5)
 			}
 		end
-	elseif choice == "reposition" then
+        elseif choice == "reposition" then
 		-- VARIED REPOSITIONING: Not always retreat
 		local intentions = {"flank", "create_distance", "orbit"}
 		if context.isPressured then
@@ -985,35 +1005,74 @@ function CombatManager.ChooseActionPlan(participant, context)
 			intentions = {"flank", "orbit", "create_distance"}  -- Prefer flanking normally
 		end
 
-		return {
-			type = "reposition",
-			intention = intentions[math.random(1, #intentions)],
-			duration = math.random(1.0, 2.5)
-		}
-	else -- defensive or utility
-		local pick = math.random()
-		if pick < 0.6 then
-			return { type = "defend", duration = math.random(1.5, 2.5) }
-		else
-			return { type = "reposition", intention = "create_distance", duration = math.random(1.0, 2.0) }
-		end
-	end
+                return {
+                        type = "reposition",
+                        intention = intentions[math.random(1, #intentions)],
+                        duration = math.random(1.0, 2.5)
+                }
+        elseif choice == "utility" then
+                local move = CombatManager.SelectUtilityMove(participant, context, utilityOptions)
+                if move then
+                        return {
+                                type = "utility",
+                                move = move,
+                                target = participant.instance,
+                                targetParticipant = participant,
+                                desiredRange = 0,
+                                followThrough = false
+                        }
+                end
+                -- fallback below if no utility move available
+        end
+
+        -- defensive fallback or default utility miss
+        do
+                local pick = math.random()
+                if pick < 0.6 then
+                        return { type = "defend", duration = math.random(1.5, 2.5) }
+                else
+                        return { type = "reposition", intention = "create_distance", duration = math.random(1.0, 2.0) }
+                end
+        end
 end
 
 function CombatManager.ExecuteDefend(participant, dur)
-	local me = participant.instance
-	local t  = math.max(1.2, dur or 2.0)
+        local me = participant.instance
+        local t  = math.max(1.2, dur or 2.0)
 
-	-- Lock/pose (keep your states as you had)
-	local defendKey = _G.STATES:SetState(me, "DEFENDING", t)
-	_G.STATES:SetState(me, "Casting", t)
-	EnhancedMovement.LockMovement(me, true, t)
-	if _G.EFFECTS then _G.EFFECTS.PlaySound("Guard",{Where=me}) end
+        -- Lock/pose (keep your states as you had)
+        local defendKey = _G.STATES:SetState(me, "DEFENDING", t)
+        _G.STATES:SetState(me, "Casting", t)
+        EnhancedMovement.LockMovement(me, true, t)
+        if _G.EFFECTS then _G.EFFECTS.PlaySound("Guard",{Where=me}) end
 
-	-- === CORE: damage taken reduction based on Defense ===
-	local defense = me:GetAttribute("Defense") or 10
-	-- DR curve: 0.20 + 0.006*Defense clamped to 50% max
-	local dr = math.clamp(0.20 + defense * 0.006, 0.10, 0.50)
+        if _G.EFFECTS then
+                _G.EFFECTS.Billboard({
+                        Where = me,
+                        Text = "DEFEND",
+                        Color = Color3.fromRGB(80, 200, 255),
+                        Duration = 1.2,
+                        Size = 18,
+                        RiseHeight = 2
+                })
+                if _G.EFFECTS.AuraEffect then
+                        _G.EFFECTS.AuraEffect({
+                                Name = "DefendAura",
+                                LocationParts = {me.PrimaryPart or me:FindFirstChildWhichIsA("BasePart")},
+                                Color = ColorSequence.new({
+                                        ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 200, 255)),
+                                        ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 120, 255))
+                                }),
+                                Duration = t,
+                                AuraReference = "Defend"
+                        })
+                end
+        end
+
+        -- === CORE: damage taken reduction based on Defense ===
+        local defense = me:GetAttribute("Defense") or 10
+        -- DR curve: 0.20 + 0.006*Defense clamped to 50% max
+        local dr = math.clamp(0.20 + defense * 0.006, 0.10, 0.50)
 	me:SetAttribute("IncomingDR", dr)  -- read during damage resolution
 
 	-- cooldown so it can't be spammed
@@ -1027,65 +1086,183 @@ function CombatManager.ExecuteDefend(participant, dur)
 	end)
 end
 
+local function weightedChoice(scoredMoves)
+        if #scoredMoves == 0 then
+                return nil
+        end
+
+        local minScore = math.huge
+        for _, entry in ipairs(scoredMoves) do
+                minScore = math.min(minScore, entry.score)
+        end
+
+        local totalWeight = 0
+        for _, entry in ipairs(scoredMoves) do
+                local baseWeight = math.max(0.1, (entry.score - minScore) + 1)
+                -- Small random jitter to avoid deterministic loops
+                local jitter = 0.85 + math.random() * 0.3
+                entry._weight = baseWeight * jitter
+                totalWeight += entry._weight
+        end
+
+        if totalWeight <= 0 then
+                return scoredMoves[1].move
+        end
+
+        local roll = math.random() * totalWeight
+        for _, entry in ipairs(scoredMoves) do
+                roll -= entry._weight
+                if roll <= 0 then
+                        return entry.move
+                end
+        end
+
+        return scoredMoves[#scoredMoves].move
+end
+
+local function computeUtilityOptions(participant, context)
+        local readyMoves = CombatManager.GetReadyMoves(participant)
+        local attacker = participant.instance
+        local options = {}
+        local hasGuard = attacker and StatusEffects.Has(attacker, "GuardUp")
+        local hasHaste = attacker and StatusEffects.Has(attacker, "Haste")
+
+        for _, move in ipairs(readyMoves) do
+                local tags = move.tags or {}
+                local effects = move.effects or {}
+                local isUtility = false
+
+                if (move.power or 0) <= 0 then
+                        isUtility = true
+                end
+
+                for _, tag in ipairs(tags) do
+                        if tag == "Buff" or tag == "Defensive" then
+                                isUtility = true
+                                break
+                        end
+                end
+
+                if not isUtility then
+                        for _, effect in ipairs(effects) do
+                                if effect == "BuffSelf" or effect == "Shield" or effect == "Haste" or effect == "FortifyAura" or effect == "Invulnerability" then
+                                        isUtility = true
+                                        break
+                                end
+                        end
+                end
+
+                if isUtility then
+                        local score = 10
+
+                        if context.isPressured then
+                                score += 15
+                        end
+
+                        if table.find(effects, "Shield") then
+                                score += context.isPressured and 25 or 12
+                        end
+
+                        if table.find(effects, "BuffSelf") then
+                                if hasGuard then
+                                        score -= 18
+                                else
+                                        score += 18
+                                end
+                        end
+
+                        if table.find(effects, "Haste") then
+                                if hasHaste then
+                                        score -= 12
+                                else
+                                        score += 14
+                                end
+                        end
+
+                        if table.find(effects, "FortifyAura") then
+                                score += 8
+                        end
+
+                        if table.find(tags, "Buff") then
+                                score += 6
+                        end
+
+                        if move.cooldown and move.cooldown > 0 then
+                                score += math.clamp(6 - move.cooldown, -8, 8)
+                        end
+
+                        table.insert(options, { move = move, score = score })
+                end
+        end
+
+        return options
+end
+
+function CombatManager.SelectUtilityMove(participant, context, cachedOptions)
+        local options = cachedOptions or computeUtilityOptions(participant, context)
+        if #options == 0 then
+                return nil
+        end
+
+        return weightedChoice(options)
+end
+
 function CombatManager.SelectTacticalMove(participant, context)
-	local readyMoves = CombatManager.GetReadyMoves(participant)
-	if #readyMoves == 0 then
-		-- FIX: Return DefaultAttack if no moves are ready
-		print(string.format("[Combat] No moves ready for %s, using DefaultAttack", participant.id))
-		return DEFAULT_ATTACK
-	end
+        local readyMoves = CombatManager.GetReadyMoves(participant)
+        if #readyMoves == 0 then
+                -- FIX: Return DefaultAttack if no moves are ready
+                print(string.format("[Combat] No moves ready for %s, using DefaultAttack", participant.id))
+                return DEFAULT_ATTACK
+        end
 
-	-- Rest of the existing move selection logic...
-	local scoredMoves = {}
-	for _, move in ipairs(readyMoves) do
-		local score = 0
+        -- Rest of the existing move selection logic...
+        local scoredMoves = {}
+        for _, move in ipairs(readyMoves) do
+                local score = 0
 
-		-- Only score damage moves, skip pure utility moves for attack selection
-		if (move.power or 0) > 0 then
-			score = score + (move.power or 0) * 0.1
+                -- Only score damage moves, skip pure utility moves for attack selection
+                if (move.power or 0) > 0 then
+                        score = score + (move.power or 0) * 0.1
 
-			local rangeScore = 0
-			if context.distance <= (move.maxRange or 999) and context.distance >= (move.minRange or 0) then
-				rangeScore = 50
-			elseif context.distance < (move.minRange or 0) then
-				rangeScore = -30
-			else
-				local rangeDiff = context.distance - (move.maxRange or 999)
-				rangeScore = -rangeDiff * 2
-			end
-			score = score + rangeScore
+                        local rangeScore = 0
+                        if context.distance <= (move.maxRange or 999) and context.distance >= (move.minRange or 0) then
+                                rangeScore = 50
+                        elseif context.distance < (move.minRange or 0) then
+                                rangeScore = -30
+                        else
+                                local rangeDiff = context.distance - (move.maxRange or 999)
+                                rangeScore = -rangeDiff * 2
+                        end
+                        score = score + rangeScore
 
-			local mpCost = move.mpCost or 0
-			if mpCost > 0 then
-				score = score - (mpCost * 0.5)
-			end
+                        local mpCost = move.mpCost or 0
+                        if mpCost > 0 then
+                                score = score - (mpCost * 0.5)
+                        end
 
-			if context.distance < 6 and move.tags and table.find(move.tags, "Melee") then
-				score = score + 25
-			end
+                        if context.distance < 6 and move.tags and table.find(move.tags, "Melee") then
+                                score = score + 25
+                        end
 
-			if context.isPressured and move.effects and table.find(move.effects, "Stun") then
-				score = score + 25
-			end
+                        if context.isPressured and move.effects and table.find(move.effects, "Stun") then
+                                score = score + 25
+                        end
 
-			if context.canPress and move.power and move.power > 30 then
-				score = score + 20
-			end
+                        if context.canPress and move.power and move.power > 30 then
+                                score = score + 20
+                        end
 
-			table.insert(scoredMoves, {move = move, score = score})
-		end
-	end
+                        table.insert(scoredMoves, {move = move, score = score})
+                end
+        end
 
-	-- FIX: If no damage moves scored, use DefaultAttack
-	if #scoredMoves == 0 then
-		return DEFAULT_ATTACK
-	end
+        -- FIX: If no damage moves scored, use DefaultAttack
+        if #scoredMoves == 0 then
+                return DEFAULT_ATTACK
+        end
 
-	table.sort(scoredMoves, function(a, b)
-		return a.score > b.score
-	end)
-
-	return scoredMoves[1] and scoredMoves[1].move
+        local chosen = weightedChoice(scoredMoves)
+        return chosen or DEFAULT_ATTACK
 end
 
 function CombatManager.GetReadyMoves(participant)
@@ -1132,14 +1309,15 @@ function CombatManager.GetOptimalRange(participant)
 end
 
 -- Move Execution
-function CombatManager.ExecuteTacticalMove(participant, move, combatData)
-	local attacker = participant.instance
-	local target = participant.target and participant.target.instance
+function CombatManager.ExecuteTacticalMove(participant, move, combatData, explicitTarget, explicitTargetParticipant)
+        local attacker = participant.instance
+        local targetParticipant = explicitTargetParticipant or participant.target
+        local target = explicitTarget or (targetParticipant and targetParticipant.instance)
 
-	if not attacker or not target or not attacker.Parent or not target.Parent then
-		setTacticalState(participant, "DECIDING")
-		return
-	end
+        if not attacker or not target or not attacker.Parent or not target.Parent then
+                setTacticalState(participant, "DECIDING")
+                return
+        end
 
 	if not isAlive(attacker) or not isAlive(target) then
 		setTacticalState(participant, "DECIDING")
@@ -1195,77 +1373,115 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData)
 	-- Resolve the attack
 	local attStats = getEffectiveStats(attacker)
 	local tgtStats = getEffectiveStats(target)
-	local outcome = CombatMath.ResolveHit(attStats, tgtStats, move)
-	if outcome.hit then
-		local dmg = CombatMath.ComputeDamage(attStats, tgtStats, move, outcome.crit)
-		local dr = target:GetAttribute("IncomingDR")
-		if dr and dr > 0 then
-			dmg = math.max(0, math.floor(dmg * (1 - math.clamp(dr, 0, 0.8)) + 0.5))
-		end
+        local tags = move.tags or {}
+        local effects = move.effects or {}
+        local isUtilityMove = (move.power or 0) <= 0
 
-		local residual, absorbed = StatusEffects.AbsorbWithShield(target, dmg)
-		if residual > 0 then
-			local humanoid = target:FindFirstChildOfClass("Humanoid")
-			if humanoid then
-				humanoid:TakeDamage(residual)
-				participant.target.currentHp = humanoid.Health
-			end
+        if not isUtilityMove then
+                for _, tag in ipairs(tags) do
+                        if tag == "Buff" or tag == "Defensive" then
+                                isUtilityMove = true
+                                break
+                        end
+                end
+        end
 
-			-- Show damage billboard
-			if _G.EFFECTS and _G.EFFECTS.Billboard then
-				_G.EFFECTS.Billboard({
-					Where = target,
-					Text = tostring(math.max(1, math.floor(residual))),
-					Color = outcome.crit and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 50, 50),
-					Duration = 1.2,
-					Size = outcome.crit and 25 or 20,
-					Offset = Vector3.new(0, 4, 0)
-				})
-			end
+        if not isUtilityMove then
+                for _, effect in ipairs(effects) do
+                        if effect == "BuffSelf" or effect == "Shield" or effect == "FortifyAura" or effect == "Haste" or effect == "Invulnerability" then
+                                isUtilityMove = true
+                                break
+                        end
+                end
+        end
 
-			-- Play hit sound and effect
-			if _G.EFFECTS then
-				if outcome.crit then
-					_G.EFFECTS.PlaySound("CriticalHit", {Where = target, Volume = 0.6})
-					_G.EFFECTS.HitGlow({
-						Where = target,
-						Type = "Full",
-						FillColor = Color3.fromRGB(255, 200, 0),
-						OutlineColor = Color3.fromRGB(255, 100, 0),
-						GlowDuration = 0.8
-					})
-				else
-					_G.EFFECTS.PlaySound("Hit", {Where = target, Volume = 0.4, RandomPitch = true})
-					_G.EFFECTS.HitGlow({
-						Where = target,
-						Type = "Outline",
-						OutlineColor = Color3.fromRGB(255, 50, 50),
-						GlowDuration = 0.4
-					})
-				end
-			end
-		end
+        if not isUtilityMove then
+                local outcome = CombatMath.ResolveHit(attStats, tgtStats, move)
+                if outcome.hit then
+                        local dmg = CombatMath.ComputeDamage(attStats, tgtStats, move, outcome.crit)
+                        local dr = target:GetAttribute("IncomingDR")
+                        if dr and dr > 0 then
+                                dmg = math.max(0, math.floor(dmg * (1 - math.clamp(dr, 0, 0.8)) + 0.5))
+                        end
 
-		Bridge.PlayImpact(attacker, target, move.id)
-		CombatManager.ApplyMoveEffects(attacker, target, move)
-	else
-		-- Show miss effect
-		if _G.EFFECTS then
-			_G.EFFECTS.Billboard({
-				Where = target,
-				Text = "MISS",
-				Color = Color3.fromRGB(150, 150, 150),
-				Duration = 1.2,
-				Size = 18
-			})
-			_G.EFFECTS.PlaySound("Miss", {Where = target, Volume = 0.3})
-		end
-	end
+                        local residual, absorbed = StatusEffects.AbsorbWithShield(target, dmg)
+                        if residual > 0 then
+                                local humanoid = target:FindFirstChildOfClass("Humanoid")
+                                if humanoid then
+                                        humanoid:TakeDamage(residual)
+                                        if targetParticipant then
+                                                targetParticipant.currentHp = humanoid.Health
+                                        end
+                                end
 
-	-- Set cooldown
-	participant.cooldowns[move.id] = os.clock() + (move.cooldown or 0)
+                                -- Show damage billboard
+                                if _G.EFFECTS and _G.EFFECTS.Billboard then
+                                        _G.EFFECTS.Billboard({
+                                                Where = target,
+                                                Text = tostring(math.max(1, math.floor(residual))),
+                                                Color = outcome.crit and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 50, 50),
+                                                Duration = 1.2,
+                                                Size = outcome.crit and 25 or 20,
+                                                Offset = Vector3.new(0, 4, 0)
+                                        })
+                                end
 
-	-- Cleanup and transition to repositioning
+                                -- Play hit sound and effect
+                                if _G.EFFECTS then
+                                        if outcome.crit then
+                                                _G.EFFECTS.PlaySound("CriticalHit", {Where = target, Volume = 0.6})
+                                                _G.EFFECTS.HitGlow({
+                                                        Where = target,
+                                                        Type = "Full",
+                                                        FillColor = Color3.fromRGB(255, 200, 0),
+                                                        OutlineColor = Color3.fromRGB(255, 100, 0),
+                                                        GlowDuration = 0.8
+                                                })
+                                        else
+                                                _G.EFFECTS.PlaySound("Hit", {Where = target, Volume = 0.4, RandomPitch = true})
+                                                _G.EFFECTS.HitGlow({
+                                                        Where = target,
+                                                        Type = "Outline",
+                                                        OutlineColor = Color3.fromRGB(255, 50, 50),
+                                                        GlowDuration = 0.4
+                                                })
+                                        end
+                                end
+                        end
+
+                        Bridge.PlayImpact(attacker, target, move.id)
+                        CombatManager.ApplyMoveEffects(attacker, target, move)
+                else
+                        -- Show miss effect
+                        if _G.EFFECTS then
+                                _G.EFFECTS.Billboard({
+                                        Where = target,
+                                        Text = "MISS",
+                                        Color = Color3.fromRGB(150, 150, 150),
+                                        Duration = 1.2,
+                                        Size = 18
+                                })
+                                _G.EFFECTS.PlaySound("Miss", {Where = target, Volume = 0.3})
+                        end
+                end
+        else
+                CombatManager.ApplyMoveEffects(attacker, target, move)
+                if _G.EFFECTS and _G.EFFECTS.Billboard then
+                        _G.EFFECTS.Billboard({
+                                Where = attacker,
+                                Text = move.name or "BUFF",
+                                Color = Color3.fromRGB(200, 255, 120),
+                                Duration = 1.2,
+                                Size = 18,
+                                RiseHeight = 2.5
+                        })
+                end
+        end
+
+        -- Set cooldown
+        participant.cooldowns[move.id] = os.clock() + (move.cooldown or 0)
+
+        -- Cleanup and transition to repositioning
 	_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
 	EnhancedMovement.LockMovement(attacker, false)
 	Bridge.PlayEnd(attacker, move.id)
@@ -1310,20 +1526,20 @@ function CombatManager.ApplyMoveEffects(attacker, target, move)
 	end
 
 	for _, effect in ipairs(move.effects) do
-		if effect == "BuffSelf" then
-			StatusEffects.Apply(attacker, {name = "GuardUp", dur = 6.0}, attacker)
-			-- Buff aura effect
-			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
-				_G.EFFECTS.AuraEffect({
-					Name = "BuffAura",
-					LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
-					Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
-					Duration = 6,
-					AuraReference = "GuardUp"
-				})
-			end
-		elseif effect == "Haste" then
-			StatusEffects.Apply(attacker, {name = "Haste", dur = 5.0}, attacker)
+                if effect == "BuffSelf" then
+                        StatusEffects.Apply(attacker, {name = "GuardUp", dur = 6.0}, attacker)
+                        -- Buff aura effect
+                        if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "BuffAura",
+                                        LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
+                                        Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
+                                        Duration = 6,
+                                        AuraReference = "GuardUp"
+                                })
+                        end
+                elseif effect == "Haste" then
+                        StatusEffects.Apply(attacker, {name = "Haste", dur = 5.0}, attacker)
 			-- Haste aura effect
 			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
 				_G.EFFECTS.AuraEffect({
@@ -1331,13 +1547,28 @@ function CombatManager.ApplyMoveEffects(attacker, target, move)
 					LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
 					Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
 					Duration = 5,
-					AuraReference = "Haste"
-				})
-			end
-		elseif effect == "Invulnerability" then
-			StatusEffects.Apply(attacker, {name = "Invulnerability", dur = 1.0}, attacker)
-		end
-	end
+                                AuraReference = "Haste"
+                        })
+                end
+                elseif effect == "Invulnerability" then
+                        StatusEffects.Apply(attacker, {name = "Invulnerability", dur = 1.0}, attacker)
+                elseif effect == "FortifyAura" then
+                        local alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
+                        StatusEffects.Apply(attacker, {name = "GuardUp", dur = 8.0}, attacker)
+                        if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "FortifyAura",
+                                        LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
+                                        Color = ColorSequence.new({
+                                                ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
+                                                ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
+                                        }),
+                                        Duration = alreadyFortified and 4 or 8,
+                                        AuraReference = "Fortify"
+                                })
+                        end
+                end
+        end
 end
 
 -- Target Selection
