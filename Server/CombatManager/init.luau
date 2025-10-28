@@ -1,0 +1,1474 @@
+-- ModuleScript: ServerScriptService>Main>CombatManager
+local CombatManager = {}
+CombatManager.__index = CombatManager
+
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local RS = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+
+-- Modules
+local MOVES_MODULE = require(RS.Modules.Moves)
+local PERSONALITIES_MODULE = require(RS.Modules.Personalities)
+local COMBAT_ZONE = require(script.Parent.CombatZone)
+local AnimationManager = require(RS.Modules.AnimationManager)
+local AnimationHandler = require(script.Parent.AnimationHandler)
+local Bridge = require(script.Bridge)
+local CombatMath = require(script.CombatMath)
+local StatusEffects = require(script.StatusEffects)
+local EnhancedMovement = require(script.EnhancedMovement)
+local MoveUnlocks = require(game.ReplicatedStorage.Modules.MoveUnlocks)
+
+local SE_TICK_ACC = 0
+local function _applyDotDamage(target, amount, source, tag)
+	local residual, absorbed = StatusEffects.AbsorbWithShield(target, amount)
+	if residual > 0 then
+		local hum = target:FindFirstChildOfClass("Humanoid")
+		if hum then hum:TakeDamage(residual) end
+	end
+	-- optional: floating numbers
+	if _G.EFFECTS then _G.EFFECTS.ShowDamage(target, math.max(1, math.floor(amount)), false) end
+end
+
+local STATE_DURATIONS = {
+	deciding = 0.1,
+	positioning = 2,
+	repositioning = 1,
+	resting = 0.1,
+	reacting = 0.1
+}
+
+-- Storage
+local activeCombats = {}
+local combatParticipants = {}
+local combatLoopConnection = nil
+local onCombatEndCallbacks = {}
+local DEFAULT_ATTACK = {
+	id = "DefaultAttack",
+	name = "Default Attack",
+	rarity = "Amateur",
+	power = 8,
+	cooldown = 1.5,
+	minRange = 0,
+	maxRange = 6,
+	castTime = 0.4,
+	castSpeed = 1.0,
+	lockMovement = true,
+	effects = {},
+	tags = {"Melee", "Universal"},
+	accuracy = 0.92,
+	critChance = 0.03,
+	mpCost = 0
+}
+
+-- Utility Functions
+
+local function setTacticalState(participant, newState)
+	local oldState = participant.combatState
+	local oldKey = participant.combatStateKey
+	local monster = participant.instance
+
+	if not monster or not monster.Parent then return end
+
+	-- 1. Remove the old tactical state, *unless* it was "CASTING".
+	--    "CASTING" is removed manually by ExecuteTacticalMove because it has a unique key.
+	if oldState and oldKey and oldState ~= "CASTING" then
+		if _G.STATES:IsInState(monster, oldState) then
+			_G.STATES:RemoveState(monster, oldState, oldKey)
+		end
+	end
+
+	-- 2. Set the new state
+	participant.combatState = newState
+	participant.stateStartTime = os.clock()
+
+	-- 3. If the new state is *not* "CASTING", set it in _G.STATES and store the key.
+	if newState ~= "CASTING" then
+		participant.combatStateKey = _G.STATES:SetState(monster, newState)
+	else
+		-- If new state *is* "CASTING", clear the key.
+		-- ExecuteTacticalMove will set the _G.STATES "Casting" state and store its own key.
+		participant.combatStateKey = nil 
+	end
+end
+
+local function getPrimaryPart(m)
+	return m and (m.PrimaryPart or m:FindFirstChild("HumanoidRootPart"))
+end
+
+local function _fadeAndCleanup(model: Model, t: number)
+	if not (model and model.Parent) then return end
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 1 then
+			local ti = TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			pcall(function() TweenService:Create(d, ti, {Transparency = 1}):Play() end)
+			if d:FindFirstChildOfClass("Decal") then
+				for _, dec in ipairs(d:GetDescendants()) do
+					if dec:IsA("Decal") then
+						pcall(function() TweenService:Create(dec, ti, {Transparency = 1}):Play() end)
+					end
+				end
+			end
+		end
+	end
+	task.delay(t + 0.05, function()
+		if model and model.Parent then pcall(model.Destroy, model) end
+	end)
+end
+
+local function _playDeath(model: Model)
+	if not (model and model.Parent) then return end
+	if _G.FUNCTIONS and _G.FUNCTIONS.playDeathFrozen then
+		pcall(function() _G.FUNCTIONS.playDeathFrozen(model, 0.6, 1.5, {fallbackLen = 1.2}) end)
+	else
+		-- fallback: little ragdoll-ish nudge
+		local hum = model:FindFirstChildOfClass("Humanoid")
+		if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.FallingDown) end) end
+	end
+end
+
+local function isAlive(model)
+	if not model or not model.Parent then return false end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	return hum and hum.Health > 0
+end
+
+local function inRange(a, b, minR, maxR)
+	local pa, pb = getPrimaryPart(a), getPrimaryPart(b)
+	if not pa or not pb then return false end
+	local d = (pa.Position - pb.Position).Magnitude
+	if minR and d < minR then return false end
+	if maxR and d > maxR then return false end
+	return true
+end
+
+local function getEffectiveStats(model)
+	local base = {
+		Strength = model:GetAttribute("Strength") or 10,
+		Defense = model:GetAttribute("Defense") or 10,
+		Skill = model:GetAttribute("Skill") or 10,
+		Speed = model:GetAttribute("Speed") or 10,
+		Intelligence = model:GetAttribute("Intelligence") or 10,
+		Luck = model:GetAttribute("Luck") or 10,
+		MP = model:GetAttribute("MP") or 0,
+		MaxMP = model:GetAttribute("MaxMP") or 100,
+	}
+
+	local mods, flags = StatusEffects.GetStatModifiers(model)
+	for stat, v in pairs(mods.add) do
+		base[stat] = (base[stat] or 0) + v
+	end
+	for stat, m in pairs(mods.mult) do
+		base[stat] = math.floor((base[stat] or 0) * m + 0.5)
+	end
+	base.__flags = flags
+	return base
+end
+
+local function payMp(model, cost)
+	if cost <= 0 then return true end
+
+	local mp = model:GetAttribute("MP")
+	if mp == nil then
+		local maxMp = model:GetAttribute("MaxMP") or 100
+		model:SetAttribute("MP", maxMp)
+		mp = maxMp
+	end
+
+	if mp < cost then return false end
+
+	model:SetAttribute("MP", mp - cost)
+	return true
+end
+
+local function regenMp(model, dt)
+	local mp = model:GetAttribute("MP") or 0
+	local maxmp = model:GetAttribute("MaxMP") or 100
+	mp = math.min(maxmp, mp + (50 * dt))
+	model:SetAttribute("MP", mp)
+end
+
+local function getMonsterMoves(monsterInstance)
+	local race = monsterInstance:GetAttribute("Race") or "Default"
+	local moves = {}
+	local ownerIdAttr = monsterInstance:GetAttribute("OwnerId")
+	local monsterData = nil
+
+	if _G.MONSTERGENERATOR and ownerIdAttr then
+		monsterData = _G.MONSTERGENERATOR.GetPlayerMonsterData(tonumber(ownerIdAttr))
+	end
+
+	if monsterData and monsterData.Data and monsterData.Data.Moves then
+		-- FIX: Properly extract move data from the stored format
+		for _, moveInfo in (monsterData.Data.Moves) do
+			local moveData = moveInfo.move or moveInfo
+			local id = moveData.id or moveData
+			if type(id) == "string" then
+				local m = MOVES_MODULE:GetMove(race, id)
+				if m then
+					table.insert(moves, m)
+				else
+					-- Fallback to BasicAttack if move not found
+					local basicAttack = MOVES_MODULE:GetMove(race, "BasicAttack")
+					if basicAttack then
+						table.insert(moves, basicAttack)
+					end
+				end
+			end
+		end
+	else
+		-- FIX: Fallback to attribute-based move loading
+		local count = monsterInstance:GetAttribute("MoveCount") or 0
+		for i = 1, count do
+			local id = monsterInstance:GetAttribute("Move" .. i)
+			if id then
+				local m = MOVES_MODULE:GetMove(race, id)
+				if m then
+					table.insert(moves, m)
+				end
+			end
+		end
+	end
+
+	-- FIX: Ensure at least BasicAttack is available
+	if #moves == 0 then
+		local basicAttack = MOVES_MODULE:GetMove(race, "BasicAttack")
+		if basicAttack then
+			table.insert(moves, basicAttack)
+		else
+			-- Ultimate fallback
+			table.insert(moves, DEFAULT_ATTACK)
+		end
+	end
+
+	return moves
+end
+
+-- Core Combat Functions
+function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
+	local opts, onCompleteCallback
+	if typeof(maybeOptsOrCb) == "table" then
+		opts, onCompleteCallback = maybeOptsOrCb, maybeCb
+	else
+		onCompleteCallback = maybeOptsOrCb
+		opts = nil
+	end
+
+	local combatId = HttpService:GenerateGUID(false)
+	print("Starting combat with ID:", combatId)
+
+	onCombatEndCallbacks[combatId] = onCompleteCallback
+
+	local combatData = {
+		id = combatId,
+		participants = {},
+		teams = {},
+		startTime = tick(),
+		zone = nil
+	}
+
+	combatData.zone = COMBAT_ZONE.Create(combatId, participants, opts)
+
+
+	for _, p in ipairs(combatData.participants) do
+		if p.instance and p.instance.Parent then
+			EnhancedMovement.InitializeMonster(p.instance)
+			EnhancedMovement.SetZone(p.instance, combatData.zone) -- NEW
+		end
+	end
+
+	local function safeRoot(model)
+		return model.PrimaryPart or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart")
+	end
+
+	local n = #combatData.participants
+	if n > 0 then
+		local center = combatData.zone.center
+		local radius = math.max(6, (combatData.zone.radius or 30) * 0.75)
+		local baseAngle = math.random() * math.pi * 2
+
+		-- Compute ring slots
+		local slots = table.create(n)
+		for i = 1, n do
+			local angle = baseAngle + ((i - 1) * (2 * math.pi / n))
+			local pos = center + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+			slots[i] = pos
+		end
+
+		-- Teleport + face opposite slot (i ↔ i + n/2)
+		for i, profile in ipairs(combatData.participants) do
+			local root = safeRoot(profile.instance)
+			if root then
+				local myPos = slots[i]
+				local oppositeIndex = ((i - 1 + math.floor(n / 2)) % n) + 1
+				local lookAt = slots[oppositeIndex]
+				profile.instance:PivotTo(CFrame.lookAt(myPos, Vector3.new(lookAt.X, myPos.Y, lookAt.Z)))
+			end
+		end
+	end
+
+	for _, monsterInstance in ipairs(participants) do
+		if not monsterInstance or not monsterInstance.Parent then continue end
+		_G.STATES:RemoveState( monsterInstance, "Following")
+		local participantId = monsterInstance:GetAttribute("OwnerId") or monsterInstance.Name
+		local team = monsterInstance:GetAttribute("Team") or 1
+		local humanoid = monsterInstance:FindFirstChildOfClass("Humanoid")
+		local maxHp = humanoid and humanoid.MaxHealth or 100
+
+		-- Initialize MP if needed
+		local currentMp = monsterInstance:GetAttribute("MP")
+		if currentMp == nil then
+			local maxMp = monsterInstance:GetAttribute("MaxMP") or 100
+			monsterInstance:SetAttribute("MP", maxMp)
+			currentMp = maxMp
+		end
+
+		local personalityName = monsterInstance:GetAttribute("Personality") or "Unpredictable"
+		local personalityData = PERSONALITIES_MODULE.Personalities[personalityName] or PERSONALITIES_MODULE.Personalities.Unpredictable
+
+		local combatantProfile = {
+			id = participantId,
+			instance = monsterInstance,
+			team = team,
+			stats = { Hp = maxHp },
+			currentHp = humanoid and humanoid.Health or maxHp,
+			currentMp = currentMp,
+			moves = getMonsterMoves(monsterInstance),
+			personality = personalityData,
+			target = nil,
+			cooldowns = {},
+			combatState = "DECIDING", -- Use string literal
+			combatStateKey = nil, -- To store the key from _G.STATES
+			stateStartTime = os.clock(),
+			currentPlan = nil,
+			behaviorProfile = {
+				aggression = personalityData.movementStyle.aggressionMultiplier or 1.0,
+				patience = 1.0,
+				caution = 0.5,
+				adaptability = 0.7,
+			}
+		}
+
+		-- Initialize cooldowns
+		for _, move in ipairs(combatantProfile.moves) do
+			combatantProfile.cooldowns[move.id] = 0
+		end
+
+		if not combatantProfile.target then
+			-- Set initial target to first enemy found
+			for _, otherInstance in ipairs(participants) do
+				if otherInstance ~= monsterInstance then
+					local otherId = otherInstance:GetAttribute("OwnerId") or otherInstance.Name
+					combatantProfile.target = combatData.participants[otherId]
+					EnhancedMovement.SetTarget(monsterInstance, otherInstance)
+					print(string.format("[Combat] %s initial target set to %s", participantId, otherId))
+					break
+				end
+			end
+		end
+
+		combatData.participants[participantId] = combatantProfile
+		combatParticipants[monsterInstance] = combatId
+
+		if not combatData.teams[team] then
+			combatData.teams[team] = {}
+		end
+		table.insert(combatData.teams[team], combatantProfile)
+
+		combatantProfile.combatStateKey = _G.STATES:SetState(monsterInstance, "DECIDING")
+		EnhancedMovement.InitializeMonster(monsterInstance)
+
+		if _G.STATES:IsInState(monsterInstance, "Following") then
+			local st = _G.STATES:GetStorage(monsterInstance)
+			if st and st.Following then
+				_G.STATES:RemoveState(monsterInstance, "Following", st.Following.self_key)
+			end
+		end
+
+		_G.STATES:SetState(monsterInstance, "InCombat")
+		combatantProfile.combatStateKey = _G.STATES:SetState(monsterInstance, "DECIDING")
+		EnhancedMovement.InitializeMonster(monsterInstance)
+		EnhancedMovement.SetZone(monsterInstance, combatData.zone)
+	end
+
+
+
+	--combatData.zone = COMBAT_ZONE.Create(combatId, participants, opts)
+	activeCombats[combatId] = combatData
+
+	if not combatLoopConnection or not combatLoopConnection.Connected then
+		combatLoopConnection = RunService.Heartbeat:Connect(CombatManager.StateBasedCombatLoop)
+	end
+
+	return combatId
+end
+
+local function _reconcileControlStates(model)
+	local _, flags = StatusEffects.GetStatModifiers(model)
+	local isStun  = flags.Stunned or false
+	local noMove  = flags.NoMove or false
+	local noCast  = flags.NoCast or false
+
+	-- Mirror "Stunned" into States (so Movement respects it)
+	local st = _G.STATES and _G.STATES:GetStorage(model)
+	if isStun and (not st or not st.Stunned) then
+		_G.STATES:SetState(model, "Stunned") -- no duration; SE owns the timer
+	elseif (not isStun) and st and st.Stunned then
+		_G.STATES:RemoveState(model, "Stunned", st.Stunned.self_key)
+	end
+
+	-- Optional: expose convenience attributes for UI/logic
+	model:SetAttribute("NoMove", noMove and true or nil)
+	model:SetAttribute("NoCast", noCast and true or nil)
+end
+
+function CombatManager.EndCombat(combatId, results)
+	local combatData = activeCombats[combatId]
+	if not combatData or combatData._ended then return end
+
+	combatData._ended = true
+	print("Ending combat", combatId)
+
+	-- IMPROVED WIN DETECTION
+	local winningTeam = nil
+	local winningInstance = nil
+
+	-- Check which teams still have alive members
+	local aliveTeams = {}
+	for teamId, members in pairs(combatData.teams) do
+		for _, member in ipairs(members) do
+			if member.currentHp > 0 and isAlive(member.instance) then
+				aliveTeams[teamId] = true
+				winningInstance = member.instance
+				break
+			end
+		end
+	end
+
+	-- Determine winner
+	local aliveCount = 0
+	local lastAliveTeam = nil
+	for teamId in pairs(aliveTeams) do
+		aliveCount += 1
+		lastAliveTeam = teamId
+	end
+
+	if aliveCount == 1 then
+		winningTeam = lastAliveTeam
+		-- Find the actual winning instance
+		for _, member in ipairs(combatData.teams[winningTeam]) do
+			if member.currentHp > 0 and isAlive(member.instance) then
+				winningInstance = member.instance
+				break
+			end
+		end
+	end
+
+	print(string.format("[CombatEnd] Winner: Team %s, Instance: %s", 
+		tostring(winningTeam), winningInstance and winningInstance.Name or "None"))
+
+	CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
+
+	-- Cleanup
+	COMBAT_ZONE.Remove(combatId)
+
+	for _, participant in pairs(combatData.participants) do
+		if participant.instance then
+			combatParticipants[participant.instance] = nil
+			EnhancedMovement.Cleanup(participant.instance)
+		end
+	end
+
+	activeCombats[combatId] = nil
+
+	-- Call callback
+	if onCombatEndCallbacks[combatId] then
+		pcall(onCombatEndCallbacks[combatId], combatId, combatData, winningTeam)
+		onCombatEndCallbacks[combatId] = nil
+	end
+end
+
+-- State-Based Combat Loop
+function CombatManager.StateBasedCombatLoop(dt)
+	local currentTime = os.clock()
+
+	SE_TICK_ACC += dt
+	if SE_TICK_ACC >= 0.10 then
+		StatusEffects.Tick(SE_TICK_ACC, _applyDotDamage)
+		SE_TICK_ACC = 0
+	end
+
+	for combatId, combatData in pairs(activeCombats) do
+		-- Count participants correctly
+		local participantCount = 0
+		for _ in pairs(combatData.participants) do participantCount += 1 end
+		--print(string.format("[CombatLoop] Combat %s: %d participants", combatId, participantCount))
+
+		-- Check for combat end
+		local teamsAlive = {}
+		for teamId, members in pairs(combatData.teams) do
+			local isTeamAlive = false
+			for _, member in ipairs(members) do
+				if member.currentHp > 0 and isAlive(member.instance) then
+					isTeamAlive = true
+					break
+				end
+			end
+			if isTeamAlive then
+				teamsAlive[teamId] = true
+			end
+		end
+
+		local aliveCount = 0
+		for _ in pairs(teamsAlive) do aliveCount += 1 end
+
+		if aliveCount <= 1 then
+			local winner = nil
+			if aliveCount == 1 then
+				for teamId in pairs(teamsAlive) do
+					if combatData.teams[teamId] and #combatData.teams[teamId] > 0 then
+						winner = combatData.teams[teamId][1].instance
+						break
+					end
+				end
+			end
+			CombatManager.EndCombat(combatId, {winner = winner})
+			continue
+		end
+
+		-- Process each participant CORRECTLY
+		for participantId, participant in pairs(combatData.participants) do
+			if participant.currentHp <= 0 or not isAlive(participant.instance) then 
+				--print(string.format("[CombatLoop] %s is dead, skipping", participantId))
+				continue 
+			end
+
+			local stateDuration = currentTime - participant.stateStartTime
+			--print(string.format("[CombatLoop] %s: state=%s, duration=%.2f/%.2f", 
+			--participantId, participant.combatState, stateDuration, STATE_DURATIONS[participant.combatState] or 0))
+
+			CombatManager.ProcessParticipantState(participant, combatData, currentTime, dt)
+		end
+	end
+end
+
+function CombatManager.ShowStateBillboard(participant, state)
+	if not _G.EFFECTS or not _G.EFFECTS.Billboard then
+		return
+	end
+
+	local monster = participant.instance
+	if not monster or not monster.Parent then
+		return
+	end
+
+	local billboardConfig = {
+		Where = monster,
+		Duration = 1.5,
+		FadeTime = 0.3,
+		Offset = Vector3.new(0, 0, 2),
+		RiseHeight = 1,
+		Size = 20
+	}
+
+	-- Different billboard styles for different states
+	if state == "DECIDING" then
+		billboardConfig.Text = "DECIDING"
+		billboardConfig.Color = Color3.fromRGB(255, 255, 0) -- Yellow
+	elseif state == "POSITIONING" then
+		billboardConfig.Text = "POSITIONING"
+		billboardConfig.Color = Color3.fromRGB(0, 150, 255) -- Blue
+	elseif state == "REPOSITIONING" then
+		billboardConfig.Text = "REPOSITIONING"
+		billboardConfig.Color = Color3.fromRGB(0, 200, 100) -- Green
+	elseif state == "RESTING" then
+		billboardConfig.Text = "..."
+		billboardConfig.Color = Color3.fromRGB(150, 150, 150) -- Gray
+	elseif state == "REACTING" then
+		billboardConfig.Text = "⚡"
+		billboardConfig.Color = Color3.fromRGB(255, 100, 0) -- Orange
+	elseif state == "CASTING" then
+		billboardConfig.Text = "CAST"
+		billboardConfig.Color = Color3.fromRGB(200, 0, 255) -- Purple
+	elseif state == "DEFENDING" then
+		billboardConfig.Text = "DEFENDING"
+		billboardConfig.Color = Color3.fromRGB(0, 255, 255) -- Cyan
+	else
+		billboardConfig.Text = "❓"
+		billboardConfig.Color = Color3.fromRGB(255, 255, 255) -- White
+	end
+
+	_G.EFFECTS.Billboard(billboardConfig)
+end
+
+function CombatManager.PlayStateSound(participant, state)
+	if not _G.EFFECTS or not _G.EFFECTS.PlaySound then
+		return
+	end
+
+	local monster = participant.instance
+	if not monster or not monster.Parent then
+		return
+	end
+
+	local soundConfig = {
+		Where = monster,
+		Volume = 0.3,
+		Duration = 1,
+		FadeOutTime = 0.5
+	}
+
+	-- Different sounds for different states
+	if state == "DECIDING" then
+		soundConfig.RandomPitch = true
+		_G.EFFECTS.PlaySound("UIHover", soundConfig)
+	elseif state == "POSITIONING" or state == "REPOSITIONING" then
+		soundConfig.RandomPitch = true
+		_G.EFFECTS.PlaySound("Footstep", soundConfig)
+	elseif state == "CASTING" then
+		soundConfig.Volume = 0.5
+		_G.EFFECTS.PlaySound("MagicChime", soundConfig)
+	elseif state == "DEFENDING" then
+		soundConfig.Volume = 0.4
+		_G.EFFECTS.PlaySound("ShieldUp", soundConfig)
+	elseif state == "RESTING" then
+		soundConfig.Volume = 0.2
+		_G.EFFECTS.PlaySound("Rest", soundConfig)
+	end
+end
+
+function CombatManager.ProcessParticipantState(participant, combatData, currentTime, dt)
+	local state = participant.combatState
+	local stateDuration = currentTime - participant.stateStartTime
+
+	-- Billboard and sound effects for state transitions
+	if stateDuration < 0.1 then -- Only when state just started
+		CombatManager.ShowStateBillboard(participant, state)
+		CombatManager.PlayStateSound(participant, state)
+	end
+
+	if stateDuration > 10 then
+		print(string.format("[StateSafety]%s TIMEOUT, forcing DECIDING", participant.id))
+		setTacticalState(participant, "DECIDING")
+		return
+	end
+
+	_reconcileControlStates(participant.instance)
+
+	-- Rest of the existing state processing logic remains the same...
+	if state == "DECIDING" then
+		if stateDuration >= STATE_DURATIONS.deciding then
+			CombatManager.TacticalDecision(participant, combatData)
+		end
+
+	elseif state == "POSITIONING" then
+		local plan = participant.currentPlan
+		if not plan then
+			setTacticalState(participant, "DECIDING")
+			return
+		end
+
+		if plan.type == "attack" and plan.move then
+			-- FIXED RANGE CHECK: Allow close-range moves to execute
+			local minRange = plan.move.minRange or 0
+			local maxRange = plan.move.maxRange or 999
+
+			-- For close-range moves, be more lenient with minimum distance
+			local effectiveMinRange = minRange
+			if minRange == 0 then
+				effectiveMinRange = -0.5  -- Allow being slightly "inside" for melee
+			end
+
+			local inRange = inRange(participant.instance, plan.target, effectiveMinRange, maxRange)
+
+			if inRange then
+				-- CLOSE ENOUGH: Execute attack even if not at perfect desired range
+				setTacticalState(participant, "CASTING")
+				EnhancedMovement.FaceTarget(participant, plan.target)
+				task.spawn(CombatManager.ExecuteTacticalMove, participant, plan.move, combatData)
+
+			elseif stateDuration > STATE_DURATIONS.positioning then
+				-- POSITIONING FAILED: Try a close-range approach
+				print(string.format("[State] %s positioning failed, trying aggressive approach", participant.id))
+				setTacticalState(participant, "REPOSITIONING")
+			else
+				-- Continue positioning with adjusted strategy for close-range
+				local movementIntention = "approach"
+				if plan.desiredRange and plan.desiredRange < 5 then
+					movementIntention = "close_distance"  -- Special intention for closing gap
+				end
+
+				EnhancedMovement.Update(participant.instance, {
+					chosenMove = plan.move,
+					zone = combatData.zone,
+					intention = movementIntention,
+					desiredRange = plan.desiredRange
+				})
+			end
+		else
+			if plan.type == "defend" then
+				-- run the defend action now
+				setTacticalState(participant, "CASTING")
+				task.spawn(function()
+					CombatManager.ExecuteDefend(participant, plan.duration)
+					-- after bracing, go to RESTING
+					setTacticalState(participant, "RESTING")
+					participant.currentPlan = {
+						type = "reposition",
+						intention = "create_distance",
+						duration = math.random(1.0, 2.0)
+					}
+				end)
+				return
+			end
+			-- Non-attack positioning
+			if stateDuration >= (plan.duration or STATE_DURATIONS.positioning) then
+				setTacticalState(participant, "RESTING")
+			else
+				EnhancedMovement.Update(participant.instance, {
+					zone = combatData.zone,
+					intention = plan.intention or "orbit"
+				})
+			end
+		end
+
+	elseif state == "CASTING" then
+		-- Casting state is managed by ExecuteTacticalMove
+		-- Just check for timeout as safety
+		if stateDuration > 5 then -- 5 second max for casting
+			print(string.format("[StateSafety] %s casting timeout, forcing reposition", participant.id))
+			setTacticalState(participant, "REPOSITIONING")
+		end
+
+	elseif state == "REPOSITIONING" then
+		if stateDuration >= (participant.currentPlan.duration or STATE_DURATIONS.repositioning) then
+			setTacticalState(participant, "RESTING")
+		else
+			EnhancedMovement.Update(participant.instance, {
+				zone = combatData.zone,
+				intention = participant.currentPlan.intention or "orbit"
+			})
+		end
+
+	elseif state == "RESTING" then
+		if stateDuration >= STATE_DURATIONS.resting then
+			setTacticalState(participant, "DECIDING")
+		end
+
+	elseif state == "REACTING" then
+		if stateDuration >= STATE_DURATIONS.reacting then
+			setTacticalState(participant, "DECIDING")
+		end
+	end
+end
+
+-- Tactical Decision Engine
+function CombatManager.TacticalDecision(participant, combatData)
+	local monster = participant.instance
+	local target = participant.target and participant.target.instance
+
+	if not target or not isAlive(target) then
+		CombatManager.SelectNewTarget(participant, combatData)
+		target = participant.target and participant.target.instance
+		if not target then 
+			-- No valid target, wait and try again
+			setTacticalState(participant, "RESTING")
+			participant.currentPlan = { type = "wait", duration = 2.0 }
+			return 
+		end
+	end
+
+	-- Reset EnhancedMovement if needed
+	if not EnhancedMovement.InitializeMonster(monster) then
+		print(string.format("[Decision] Failed to initialize movement for %s", participant.id))
+		setTacticalState(participant, "RESTING")
+		return
+	end
+
+	EnhancedMovement.SetTarget(monster, target)
+
+	-- Build context and choose plan
+	local context = CombatManager.BuildCombatContext(participant, target, combatData)
+	local plan = CombatManager.ChooseActionPlan(participant, context)
+
+	if plan then
+		participant.currentPlan = plan
+		setTacticalState(participant, "POSITIONING")
+
+		-- Set preferred range for movement system
+		if plan.move then
+			EnhancedMovement.SetPreferredByMove(monster, plan.move)
+		end
+	else
+		setTacticalState(participant, "RESTING")
+	end
+
+	return plan
+end
+
+function CombatManager.BuildCombatContext(participant, target, combatData)
+	local myStats = getEffectiveStats(participant.instance)
+	local targetStats = getEffectiveStats(target)
+	local distance = (getPrimaryPart(participant.instance).Position - getPrimaryPart(target).Position).Magnitude
+	local healthRatio = participant.currentHp / participant.stats.Hp
+	local targetHealthRatio = 1.0
+	if participant.target and participant.target.stats and participant.target.stats.Hp and participant.target.stats.Hp > 0 then
+		targetHealthRatio = participant.target.currentHp / participant.target.stats.Hp
+	else
+		print(string.format("[Warning] Invalid target stats for %s", participant.instance))
+	end
+	local mpRatio = (participant.instance:GetAttribute("MP") or 0) / (participant.instance:GetAttribute("MaxMP") or 100)
+
+	return {
+		healthRatio = healthRatio,
+		targetHealthRatio = targetHealthRatio,
+		mpRatio = mpRatio,
+		distance = distance,
+		hasAdvantage = (myStats.Speed or 0) > (targetStats.Speed or 0) * 1.2,
+		isPressured = healthRatio < 0.3,
+		canPress = targetHealthRatio < 0.4,
+		cooldownMoves = CombatManager.GetReadyMoves(participant),
+		optimalRange = CombatManager.GetOptimalRange(participant)
+	}
+end
+
+function CombatManager.ChooseActionPlan(participant, context)
+	local personality = participant.personality
+	local weights = {
+		attack = personality.weights.attack or 40,
+		reposition = personality.weights.reposition or 15,
+		defensive = (personality.weights.defend or 5) + (personality.weights.retreat or 2),
+		utility = (personality.weights.buffSelf or 0) + (personality.weights.debuff or 5)
+	}
+
+	-- Context adjustments
+	if context.isPressured then
+		weights.defensive = weights.defensive * 2.5
+		weights.reposition = weights.reposition * 1.8
+	end
+
+	if context.canPress then
+		weights.attack = weights.attack * 1.6
+	end
+
+	if context.mpRatio < 0.3 then
+		weights.attack = weights.attack * 0.5
+		weights.utility = weights.utility * 0.3
+	end
+
+	-- PREVENT CHASE-RETREAT LOOPS: If very close, prefer attack over reposition
+	if context.distance < 8 then
+		weights.attack = weights.attack * 1.5
+		weights.reposition = weights.reposition * 0.6
+	end
+
+	-- Choose category
+	local choice = _G.FUNCTIONS:Decision(weights)
+
+	-- Build specific plan
+	if choice == "attack" then
+		local move = CombatManager.SelectTacticalMove(participant, context)
+		if move then
+			-- DYNAMIC RANGE: Close-range moves should allow getting closer
+			local desiredRange = move.maxRange * 0.7
+			if move.minRange == 0 then
+				-- Close-range/melee moves - get much closer
+				desiredRange = math.max(2, move.maxRange * 0.3)
+			elseif move.tags and (table.find(move.tags, "Melee") or table.find(move.tags, "Close")) then
+				-- Melee moves - get very close
+				desiredRange = math.max(1.5, move.maxRange * 0.2)
+			end
+
+			return {
+				type = "attack",
+				move = move,
+				target = participant.target.instance,
+				desiredRange = desiredRange,
+				followThrough = true
+			}
+		else
+			-- Fallback to reposition if no moves available
+			return {
+				type = "reposition", 
+				intention = "flank",
+				duration = math.random(1.5, 2.5)
+			}
+		end
+	elseif choice == "reposition" then
+		-- VARIED REPOSITIONING: Not always retreat
+		local intentions = {"flank", "create_distance", "orbit"}
+		if context.isPressured then
+			intentions = {"create_distance", "flank", "orbit"}  -- Prefer retreat when pressured
+		else
+			intentions = {"flank", "orbit", "create_distance"}  -- Prefer flanking normally
+		end
+
+		return {
+			type = "reposition",
+			intention = intentions[math.random(1, #intentions)],
+			duration = math.random(1.0, 2.5)
+		}
+	else -- defensive or utility
+		local pick = math.random()
+		if pick < 0.6 then
+			return { type = "defend", duration = math.random(1.5, 2.5) }
+		else
+			return { type = "reposition", intention = "create_distance", duration = math.random(1.0, 2.0) }
+		end
+	end
+end
+
+function CombatManager.ExecuteDefend(participant, dur)
+	local me = participant.instance
+	local t  = math.max(1.2, dur or 2.0)
+
+	-- Lock/pose (keep your states as you had)
+	local defendKey = _G.STATES:SetState(me, "DEFENDING", t)
+	_G.STATES:SetState(me, "Casting", t)
+	EnhancedMovement.LockMovement(me, true, t)
+	if _G.EFFECTS then _G.EFFECTS.PlaySound("Guard",{Where=me}) end
+
+	-- === CORE: damage taken reduction based on Defense ===
+	local defense = me:GetAttribute("Defense") or 10
+	-- DR curve: 0.20 + 0.006*Defense clamped to 50% max
+	local dr = math.clamp(0.20 + defense * 0.006, 0.10, 0.50)
+	me:SetAttribute("IncomingDR", dr)  -- read during damage resolution
+
+	-- cooldown so it can't be spammed
+	participant._defendCdUntil = os.clock() + 5.0
+
+	task.delay(t, function()
+		me:SetAttribute("IncomingDR", nil)
+		_G.STATES:RemoveState(me, "Casting")
+		_G.STATES:RemoveState(me, "DEFENDING", defendKey)
+		EnhancedMovement.LockMovement(me, false)
+	end)
+end
+
+function CombatManager.SelectTacticalMove(participant, context)
+	local readyMoves = CombatManager.GetReadyMoves(participant)
+	if #readyMoves == 0 then
+		-- FIX: Return DefaultAttack if no moves are ready
+		print(string.format("[Combat] No moves ready for %s, using DefaultAttack", participant.id))
+		return DEFAULT_ATTACK
+	end
+
+	-- Rest of the existing move selection logic...
+	local scoredMoves = {}
+	for _, move in ipairs(readyMoves) do
+		local score = 0
+
+		-- Only score damage moves, skip pure utility moves for attack selection
+		if (move.power or 0) > 0 then
+			score = score + (move.power or 0) * 0.1
+
+			local rangeScore = 0
+			if context.distance <= (move.maxRange or 999) and context.distance >= (move.minRange or 0) then
+				rangeScore = 50
+			elseif context.distance < (move.minRange or 0) then
+				rangeScore = -30
+			else
+				local rangeDiff = context.distance - (move.maxRange or 999)
+				rangeScore = -rangeDiff * 2
+			end
+			score = score + rangeScore
+
+			local mpCost = move.mpCost or 0
+			if mpCost > 0 then
+				score = score - (mpCost * 0.5)
+			end
+
+			if context.distance < 6 and move.tags and table.find(move.tags, "Melee") then
+				score = score + 25
+			end
+
+			if context.isPressured and move.effects and table.find(move.effects, "Stun") then
+				score = score + 25
+			end
+
+			if context.canPress and move.power and move.power > 30 then
+				score = score + 20
+			end
+
+			table.insert(scoredMoves, {move = move, score = score})
+		end
+	end
+
+	-- FIX: If no damage moves scored, use DefaultAttack
+	if #scoredMoves == 0 then
+		return DEFAULT_ATTACK
+	end
+
+	table.sort(scoredMoves, function(a, b)
+		return a.score > b.score
+	end)
+
+	return scoredMoves[1] and scoredMoves[1].move
+end
+
+function CombatManager.GetReadyMoves(participant)
+	local ready = {}
+	local currentTime = os.clock()
+
+	for _, move in ipairs(participant.moves) do
+		local cooldownEnd = participant.cooldowns[move.id] or 0
+		local hasMp = (participant.instance:GetAttribute("MP") or 0) >= (move.mpCost or 0)
+		if currentTime >= cooldownEnd and hasMp then
+			table.insert(ready, move)
+		end
+	end
+
+	-- FIX: If no damage moves available, add DefaultAttack
+	if #ready == 0 then
+		local hasDamageMove = false
+		for _, move in ipairs(participant.moves) do
+			if (move.power or 0) > 0 then
+				hasDamageMove = true
+				break
+			end
+		end
+
+		if not hasDamageMove then
+			-- Add DefaultAttack as fallback
+			table.insert(ready, DEFAULT_ATTACK)
+			print(string.format("[Combat] No damage moves available for %s, using DefaultAttack", participant.id))
+		end
+	end
+
+	return ready
+end
+
+
+function CombatManager.GetOptimalRange(participant)
+	local maxRange = 0
+	for _, move in ipairs(participant.moves) do
+		if move.maxRange and move.maxRange > maxRange then
+			maxRange = move.maxRange
+		end
+	end
+	return maxRange * 0.7
+end
+
+-- Move Execution
+function CombatManager.ExecuteTacticalMove(participant, move, combatData)
+	local attacker = participant.instance
+	local target = participant.target and participant.target.instance
+
+	if not attacker or not target or not attacker.Parent or not target.Parent then
+		setTacticalState(participant, "DECIDING")
+		return
+	end
+
+	if not isAlive(attacker) or not isAlive(target) then
+		setTacticalState(participant, "DECIDING")
+		return
+	end
+	-- Set casting state
+	-- Set casting state
+	local castKey = _G.STATES:SetState(attacker, "Casting", (move.castTime or 0.8) + 0.2)
+	participant.combatStateKey = castKey -- Store the key
+	EnhancedMovement.LockMovement(attacker, true)
+
+	-- Check MP and cast restrictions
+	local _, flags = StatusEffects.GetStatModifiers(attacker)
+	if flags.NoCast or not payMp(attacker, move.mpCost or 0) then
+		_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
+		EnhancedMovement.LockMovement(attacker, false)
+		setTacticalState(participant, "DECIDING")
+		return
+	end
+
+	-- Play cast animation and effects
+	Bridge.PlayCast(attacker, move.id, move.castTime)
+
+	if _G.EFFECTS then
+		_G.EFFECTS.PlaySound(move.sfxStart or "DefaultImpact", {Where = attacker})
+		if move.vfxCast then
+			_G.EFFECTS.EmitterEffect({Name = move.vfxCast, Position = getPrimaryPart(attacker)})
+		end
+	end
+
+	-- Wait for cast time
+	local race = attacker:GetAttribute("Race") or "Default"
+	local animData = AnimationManager:GetCastAnimation(race)
+
+	if animData and animData.AnimationId ~= "" then
+		AnimationHandler:PlayCastOnce(attacker, animData.AnimationId, {
+			fallback = move.castTime,
+			speed = move.castSpeed or 1.0,
+		})
+		task.wait(move.castTime)
+	else
+		task.wait(move.castTime)
+	end
+
+	-- Check if still valid after cast
+	if not attacker or not target or not attacker.Parent or not target.Parent then
+		_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
+		EnhancedMovement.LockMovement(attacker, false)
+		setTacticalState(participant, "DECIDING")
+		return
+	end
+
+	-- Resolve the attack
+	local attStats = getEffectiveStats(attacker)
+	local tgtStats = getEffectiveStats(target)
+	local outcome = CombatMath.ResolveHit(attStats, tgtStats, move)
+	if outcome.hit then
+		local dmg = CombatMath.ComputeDamage(attStats, tgtStats, move, outcome.crit)
+		local dr = target:GetAttribute("IncomingDR")
+		if dr and dr > 0 then
+			dmg = math.max(0, math.floor(dmg * (1 - math.clamp(dr, 0, 0.8)) + 0.5))
+		end
+
+		local residual, absorbed = StatusEffects.AbsorbWithShield(target, dmg)
+		if residual > 0 then
+			local humanoid = target:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				humanoid:TakeDamage(residual)
+				participant.target.currentHp = humanoid.Health
+			end
+
+			-- Show damage billboard
+			if _G.EFFECTS and _G.EFFECTS.Billboard then
+				_G.EFFECTS.Billboard({
+					Where = target,
+					Text = tostring(math.max(1, math.floor(residual))),
+					Color = outcome.crit and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 50, 50),
+					Duration = 1.2,
+					Size = outcome.crit and 25 or 20,
+					Offset = Vector3.new(0, 4, 0)
+				})
+			end
+
+			-- Play hit sound and effect
+			if _G.EFFECTS then
+				if outcome.crit then
+					_G.EFFECTS.PlaySound("CriticalHit", {Where = target, Volume = 0.6})
+					_G.EFFECTS.HitGlow({
+						Where = target,
+						Type = "Full",
+						FillColor = Color3.fromRGB(255, 200, 0),
+						OutlineColor = Color3.fromRGB(255, 100, 0),
+						GlowDuration = 0.8
+					})
+				else
+					_G.EFFECTS.PlaySound("Hit", {Where = target, Volume = 0.4, RandomPitch = true})
+					_G.EFFECTS.HitGlow({
+						Where = target,
+						Type = "Outline",
+						OutlineColor = Color3.fromRGB(255, 50, 50),
+						GlowDuration = 0.4
+					})
+				end
+			end
+		end
+
+		Bridge.PlayImpact(attacker, target, move.id)
+		CombatManager.ApplyMoveEffects(attacker, target, move)
+	else
+		-- Show miss effect
+		if _G.EFFECTS then
+			_G.EFFECTS.Billboard({
+				Where = target,
+				Text = "MISS",
+				Color = Color3.fromRGB(150, 150, 150),
+				Duration = 1.2,
+				Size = 18
+			})
+			_G.EFFECTS.PlaySound("Miss", {Where = target, Volume = 0.3})
+		end
+	end
+
+	-- Set cooldown
+	participant.cooldowns[move.id] = os.clock() + (move.cooldown or 0)
+
+	-- Cleanup and transition to repositioning
+	_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
+	EnhancedMovement.LockMovement(attacker, false)
+	Bridge.PlayEnd(attacker, move.id)
+
+	setTacticalState(participant, "REPOSITIONING")
+	participant.currentPlan = {
+		type = "reposition",
+		intention = "create_distance",
+		duration = math.random(1.0, 2.0)
+	}
+end
+
+function CombatManager.ApplyMoveEffects(attacker, target, move)
+	if not move.effects then return end
+
+	local EFFECT_MAP = {
+		Slow = "Slow", Stun = "Stun", Burn = "Burn", 
+		DamageOverTime = "Poison", Shield = "Shield", 
+		BuffSelf = "GuardUp", Haste = "Haste", 
+		Silence = "Silence", Root = "Root", 
+		Invulnerability = "Invulnerability", Disarm = "Weaken", Pull = "Root"
+	}
+
+	for _, effect in ipairs(move.effects) do
+		local name = EFFECT_MAP[effect]
+		if name == "Shield" then
+			StatusEffects.Apply(target, {name = "Shield", dur = 6, power = 20}, attacker)
+			-- Shield aura effect
+			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+				_G.EFFECTS.AuraEffect({
+					Name = "ShieldAura",
+					LocationParts = {target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")},
+					Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
+					Duration = 6,
+					AuraReference = "Shield"
+				})
+			end
+		elseif name and name ~= "GuardUp" and name ~= "Haste" then
+			local dur = (name == "Stun") and 1.0 or 6.0
+			StatusEffects.Apply(target, {name = name, dur = dur}, attacker)
+		end
+	end
+
+	for _, effect in ipairs(move.effects) do
+		if effect == "BuffSelf" then
+			StatusEffects.Apply(attacker, {name = "GuardUp", dur = 6.0}, attacker)
+			-- Buff aura effect
+			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+				_G.EFFECTS.AuraEffect({
+					Name = "BuffAura",
+					LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
+					Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
+					Duration = 6,
+					AuraReference = "GuardUp"
+				})
+			end
+		elseif effect == "Haste" then
+			StatusEffects.Apply(attacker, {name = "Haste", dur = 5.0}, attacker)
+			-- Haste aura effect
+			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+				_G.EFFECTS.AuraEffect({
+					Name = "SpeedAura",
+					LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
+					Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
+					Duration = 5,
+					AuraReference = "Haste"
+				})
+			end
+		elseif effect == "Invulnerability" then
+			StatusEffects.Apply(attacker, {name = "Invulnerability", dur = 1.0}, attacker)
+		end
+	end
+end
+
+-- Target Selection
+function CombatManager.SelectNewTarget(participant, combatData)
+	local myTeam = participant.team
+	local potentialTargets = {}
+
+	for teamId, members in pairs(combatData.teams) do
+		if teamId ~= myTeam then
+			for _, member in ipairs(members) do
+				if member.currentHp > 0 and isAlive(member.instance) then
+					table.insert(potentialTargets, member)
+				end
+			end
+		end
+	end
+
+	if #potentialTargets > 0 then
+		participant.target = potentialTargets[math.random(1, #potentialTargets)]
+		EnhancedMovement.SetTarget(participant.instance, participant.target.instance)
+	end
+end
+
+-- Combat Results
+function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
+	print("Processing combat results...")
+
+	-- Debug: Print all participants status
+	for participantId, participant in pairs(combatData.participants) do
+		local alive = participant.currentHp > 0 and isAlive(participant.instance)
+		print(string.format("[Result] %s: HP=%d, Alive=%s", 
+			participantId, participant.currentHp, tostring(alive)))
+	end
+
+	-- === RESULTS: wins + stat increases via _G.FUNCTIONS.distributePoints ===
+	local function applyResults(participant, didWin)
+		local m = participant.instance
+		if not (m and m.Parent) then return end
+		local ownerId = m:GetAttribute("OwnerId")
+
+		-- Wins/Losses as attributes (visible & simple)
+		if didWin then
+			m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
+		else
+			m:SetAttribute("Losses", (m:GetAttribute("Losses") or 0) + 1)
+		end
+
+		-- Stat bumps: 2 points for win, 1 for loss
+		local points = didWin and 2 or 1
+		local keys = {"Hp","Mp","Strength","Defense","Skill","Speed","Intelligence"} -- attrs you actually set
+
+		local dist
+		if _G.FUNCTIONS and _G.FUNCTIONS.distributePoints then
+			local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
+			dist = ok and res or nil
+		end
+		if not dist then
+			-- simple fallback: random +1s
+			dist = {}
+			for i = 1, points do
+				local k = keys[math.random(1, #keys)]
+				dist[k] = (dist[k] or 0) + 1
+			end
+		end
+
+		-- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
+		for k, add in pairs(dist) do
+			if add and add ~= 0 then
+				if k == "Hp" then
+					local hum = m:FindFirstChildOfClass("Humanoid")
+					if hum then
+						hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
+						-- don't fully heal; but keep current within new max
+						hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
+					end
+					m:SetAttribute("Hp", (m:GetAttribute("Hp") or 100) + add)
+				elseif k == "Mp" then
+					m:SetAttribute("MP", (m:GetAttribute("MP") or 100) + add)
+					m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
+				else
+					m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
+				end
+			end
+		end
+
+		-- Optionally notify your data layer
+		if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
+			local pid = tonumber(ownerId or 0)
+			if pid and pid > 0 then
+				local entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
+				if entry and entry.Data then
+					entry.Data.Wins = m:GetAttribute("Wins") or entry.Data.Wins or 0
+					-- sync a few core stats back to Data if you rely on it elsewhere
+					entry.Data.Stats = entry.Data.Stats or {}
+					entry.Data.Stats.Hp = m:GetAttribute("Hp") or entry.Data.Stats.Hp
+					entry.Data.Stats.Mp = m:GetAttribute("MaxMP") or entry.Data.Stats.Mp
+					entry.Data.Stats.Strength = m:GetAttribute("Strength") or entry.Data.Stats.Strength
+					entry.Data.Stats.Defense = m:GetAttribute("Defense") or entry.Data.Stats.Defense
+					entry.Data.Stats.Skill = m:GetAttribute("Skill") or entry.Data.Stats.Skill
+					entry.Data.Stats.Speed = m:GetAttribute("Speed") or entry.Data.Stats.Speed
+					entry.Data.Stats.Intelligence = m:GetAttribute("Intelligence") or entry.Data.Stats.Intelligence
+				end
+			end
+		end
+	end
+
+	-- Apply results to everyone
+	for _, participant in pairs(combatData.participants) do
+		if participant.instance and participant.instance.Parent then
+			local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
+			applyResults(participant, didWin)
+		end
+	end
+
+	if winningTeam then
+		for _, member in ipairs(combatData.teams[winningTeam]) do
+			local ownerId = member.instance:GetAttribute("OwnerId")
+			if ownerId and _G.DATA then
+				local data = _G.DATA:Get(ownerId).Monster
+				data.Wins = (data.Wins or 0) + 1
+				-- optional: add progress from the battle, e.g. data.MoveProgress.Melee += X
+				MoveUnlocks.ResolveUnlocks(data, "combat", { damageDealt = member._damage or 0 })
+			end
+		end
+	end
+
+	-- === Your existing reset for survivors ===
+	for _, participant in pairs(combatData.participants) do
+		if participant.instance and participant.instance.Parent then
+			local ownerId = participant.instance:GetAttribute("OwnerId")
+
+			if participant.currentHp <= 0 then
+				_G.STATES:SetState(participant.instance, "Dead")
+			else
+				-- Reset combat states
+				if participant.combatState and participant.combatStateKey then
+					if _G.STATES:IsInState(participant.instance, participant.combatState) then
+						_G.STATES:RemoveState(participant.instance, participant.combatState, participant.combatStateKey)
+					end
+				end
+
+				local st = _G.STATES:GetStorage(participant.instance)
+				if st then
+					if st.InCombat then _G.STATES:RemoveState(participant.instance, "InCombat", st.InCombat.self_key) end
+					if st.Attacking then _G.STATES:RemoveState(participant.instance, "Attacking", st.Attacking.self_key) end
+					if st.Casting then _G.STATES:RemoveState(participant.instance, "Casting", st.Casting.self_key) end
+					if st.Defending then _G.STATES:RemoveState(participant.instance, "Defending", st.Defending.self_key) end
+				end
+
+				---- Restore movement
+				--local humanoid = participant.instance:FindFirstChildOfClass("Humanoid")
+				--if humanoid then
+				--	humanoid.AutoRotate = true
+				--	if humanoid.WalkSpeed <= 0 then
+				--		humanoid.WalkSpeed = 16
+				--	end
+				--end
+
+				EnhancedMovement.Cleanup(participant.instance)
+
+				-- Player monsters follow owner OR go idle
+				if ownerId then
+					local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
+					if ownerPlr and ownerPlr.Character then
+						_G.STATES:SetState(participant.instance, "Following")
+					else
+						_G.STATES:SetState(participant.instance, "Idle")
+					end
+				else
+					_G.STATES:SetState(participant.instance, "Idle")
+				end
+			end
+		end
+	end
+
+	-- === Check for evolution after combat ===
+	if _G.EVOLUTION and _G.EVOLUTION.CheckEvolutionTrigger then
+		for _, participant in pairs(combatData.participants) do
+			if participant.instance and participant.instance.Parent and participant.currentHp > 0 then
+				local ownerId = participant.instance:GetAttribute("OwnerId")
+				if ownerId then
+					local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
+					if ownerPlr then
+						-- Check evolution after combat (with 2 second delay to let player see results)
+						task.delay(2, function()
+							local ok, result = pcall(function()
+								return _G.EVOLUTION.CheckEvolutionTrigger(ownerPlr, "combat")
+							end)
+							if not ok then
+								warn("[CombatManager] Evolution check failed:", result)
+							end
+						end)
+					end
+				end
+			end
+		end
+	end
+	for participantId, participant in pairs(combatData.participants) do
+		if participant.currentHp > 0 then
+			local ownerId = participant.instance:GetAttribute("OwnerId")
+			if ownerId then
+				local player = game.Players:GetPlayerByUserId(ownerId)
+				if player and _G.MOVE_LEARNING then
+					_G.MOVE_LEARNING.OnCombatEnd(player, {
+						won = participant.team == winningTeam,
+						survived = true,
+						damageDealt = participant.damageDealt or 0
+					})
+				end
+			end
+		end
+	end
+end
+
+return CombatManager

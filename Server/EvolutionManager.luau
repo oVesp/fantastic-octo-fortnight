@@ -1,0 +1,612 @@
+--[[
+    EvolutionManager.lua
+    Responsável por: checar requisitos, decidir evolução, aplicar boosts/moves,
+    reconstruir o monstro, reposicionar e notificar o client.
+
+    Dependências usadas no seu projeto:
+      - _G.DATA                (sistema de dados com proxy)
+      - _G.MONSTERGENERATOR    (BuildMonster / RollMonster)
+      - ReplicatedStorage.Modules.Races (GetEvolutions / GetStage)
+      - ReplicatedStorage.Modules.Moves (GetStarterMoves)
+      - Remotes: EvolutionRequest (client->server), EvolutionEffect (server->client), EvolutionComplete (server->client)
+]]
+
+local EvolutionManager = {}
+EvolutionManager.__index = EvolutionManager
+
+-- Services
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
+local HttpService = game:GetService("HttpService")
+
+
+-- Remotes
+local Remotes = RS:WaitForChild("Remotes")
+local EvolutionRequest = Remotes:WaitForChild("EvolutionRequest")
+local EvolutionEffect  = Remotes:WaitForChild("EvolutionEffect")
+local EvolutionComplete = Remotes:WaitForChild("EvolutionComplete")
+
+-- Modules
+local Moves = require(RS.Modules.Moves)
+local Races = require(RS.Modules.Races)
+local EvoDef = require(RS.Modules.EvolutionDefs)
+local MoveUnlocks = require(RS.Modules.MoveUnlocks)
+
+
+-- Config
+local EFFECT_DURATION = 2.0 -- segundos antes de aplicar a evolução (tempo do VFX)
+
+-- Multiplicadores por estágio (ajuste livre)
+-- Multiplicadores por estágio
+local EVO_GAINS = {
+	Fledgeling = { HpPct=0.10, MpPct=0.10, StrPct=0.05, DefPct=0.05, SklPct=0.05, SpdPct=0.05, IntPct=0.05, LckPct=0.05, HpFlat=0,  MpFlat=0  },
+	Rookie     = { HpPct=0.12, MpPct=0.12, StrPct=0.08, DefPct=0.08, SklPct=0.06, SpdPct=0.06, IntPct=0.08, LckPct=0.06, HpFlat=20, MpFlat=10 },
+	Champion   = { HpPct=0.15, MpPct=0.15, StrPct=0.12, DefPct=0.12, SklPct=0.10, SpdPct=0.10, IntPct=0.12, LckPct=0.10, HpFlat=35, MpFlat=15 },
+	Elder      = { HpPct=0.18, MpPct=0.18, StrPct=0.16, DefPct=0.16, SklPct=0.12, SpdPct=0.12, IntPct=0.16, LckPct=0.12, HpFlat=50, MpFlat=20 },
+	Unique     = { HpPct=0.22, MpPct=0.22, StrPct=0.20, DefPct=0.20, SklPct=0.15, SpdPct=0.15, IntPct=0.20, LckPct=0.15, HpFlat=80, MpFlat=30 },
+}
+
+-- Bônus flat por estágio (ajuste fino por design)
+local EVOLUTION_FLAT_ADDS = {
+	Fledgeling = { Hp=0,  Mp=0 },
+	Rookie     = { Hp=20, Mp=10 },
+	Champion   = { Hp=35, Mp=15 },
+	Elder      = { Hp=50, Mp=20 },
+	Unique     = { Hp=80, Mp=30 },
+}
+
+-- ===== Utils =====
+
+local function snapshot(tbl)
+	return HttpService:JSONDecode(HttpService:JSONEncode(tbl or {}))
+end
+
+local function readNum(stats, keyA, keyB)
+	local v = stats[keyA]; if typeof(v)=="number" then return v end
+	if keyB then v = stats[keyB]; if typeof(v)=="number" then return v end end
+	return nil
+end
+-- Escreve stats em-loco (sem trocar a referência da tabela do proxy)
+local function assignStatsInPlace(targetStats: table, fromStats: table)
+	if not targetStats or not fromStats then return end
+	for k, v in pairs(fromStats) do
+		-- só escreve números válidos
+		if typeof(v) == "number" then
+			targetStats[k] = v
+		end
+	end
+	-- opcional: normalize aliases
+	if targetStats.HP then targetStats.Hp = targetStats.HP end
+	if targetStats.MP then targetStats.Mp = targetStats.MP end
+	if targetStats.Hp then targetStats.HP = targetStats.Hp end
+	if targetStats.Mp then targetStats.MP = targetStats.Mp end
+end
+
+-- Boost calculado a partir de um snapshot (pode usar sua applyStatBoosts existente)
+--local function computeBoostedStats(statsSnapshot: table, newStage: string)
+--	-- use aqui sua lógica atual (multiplicadores + bônus flat)
+--	-- abaixo um exemplo mínimo; troque pelos seus valores/func:
+--	local boosted = table.clone(statsSnapshot)
+--	local mul = EVOLUTION_BOOSTS[newStage]
+--	local add = EVOLUTION_FLAT_ADDS[newStage]
+
+--	if mul then
+--		for k, m in pairs(mul) do
+--			local cur = tonumber(boosted[k] or boosted[string.upper(k)] or boosted[string.sub(k,1,1):upper()..string.sub(k,2)])
+--			if cur then boosted[k] = math.max(1, math.floor(cur * m)) end
+--		end
+--	end
+--	if add then
+--		for k, a in pairs(add) do
+--			local cur = tonumber(boosted[k] or boosted[string.upper(k)] or boosted[string.sub(k,1,1):upper()..string.sub(k,2)]) or 0
+--			boosted[k] = math.max(1, math.floor(cur + a))
+--		end
+--	end
+--	-- normalização mínima
+--	for _, key in ipairs({ "Hp","HP","Mp","MP","Strength","Defense","Skill","Speed","Intelligence","Luck" }) do
+--		if typeof(boosted[key]) == "number" then
+--			boosted[key] = math.max(1, math.floor(boosted[key]))
+--		end
+--	end
+--	-- garante aliases coerentes
+--	boosted.HP = boosted.Hp or boosted.HP
+--	boosted.MP = boosted.Mp or boosted.MP
+--	boosted.Hp = boosted.HP
+--	boosted.Mp = boosted.MP
+--	return boosted
+--end
+
+local function addClampFloor(x, delta)
+	local v = (tonumber(x) or 0) + (tonumber(delta) or 0)
+	if v ~= v then v = 0 end
+	return math.max(1, math.floor(v))
+end
+
+local function writeAlias(stats, keyMain, keyAlias, value)
+	if typeof(value) == "number" then
+		stats[keyMain] = value
+		if keyAlias then stats[keyAlias] = value end
+	end
+end
+
+local function applyEvolutionGainsInPlace(stats, newStage)
+	local g = EVO_GAINS[newStage]; if not g then return end
+	-- HP / MP (aditivo)
+	local hp = readNum(stats, "Hp", "HP") or 0
+	local mp = readNum(stats, "Mp", "MP") or 0
+	local hpDelta = math.floor(hp * (g.HpPct or 0)) + (g.HpFlat or 0)
+	local mpDelta = math.floor(mp * (g.MpPct or 0)) + (g.MpFlat or 0)
+	writeAlias(stats, "Hp", "HP", addClampFloor(hp, hpDelta))
+	writeAlias(stats, "Mp", "MP", addClampFloor(mp, mpDelta))
+
+	-- Demais atributos (percentual)
+	local function addPct(key, pct)
+		local cur = readNum(stats, key); if not cur then return end
+		local delta = math.floor(cur * (pct or 0))
+		stats[key] = addClampFloor(cur, delta)
+	end
+	addPct("Strength", g.StrPct); addPct("Defense", g.DefPct)
+	addPct("Skill", g.SklPct);    addPct("Speed", g.SpdPct)
+	addPct("Intelligence", g.IntPct); addPct("Luck", g.LckPct)
+end
+
+-- Procura o modelo do monstro do jogador por atributo "OwnerId" (fallback robusto).
+function EvolutionManager.FindPlayerMonster(player: Player)
+	local uid = player.UserId
+	for _, inst in ipairs(workspace:GetDescendants()) do
+		if inst:IsA("Model") and inst:GetAttribute("OwnerId") == uid then
+			return inst
+		end
+	end
+	-- Se você tiver um cache próprio (ex.: _G.PlayerMonsters[uid]), pode usar aqui.
+	return nil
+end
+
+local function meetsGates(ctx, gates)
+	if not gates then return true end
+	if gates.baseRaceFamily and gates.baseRaceFamily ~= ctx.baseRaceFamily then return false end
+	if gates.minBond and (ctx.bond or 0) < gates.minBond then return false end
+	if gates.minWins and (ctx.wins or 0) < gates.minWins then return false end
+	if gates.maxCareMistakes and (ctx.careMistakes or 0) > gates.maxCareMistakes then return false end
+	if gates.minStats then
+		for stat, minV in pairs(gates.minStats) do
+			if (ctx.stats[stat] or 0) < minV then return false end
+		end
+	end
+	return true
+end
+
+-- ===== Core API =====
+
+-- Decide a evolução com base em Races:GetEvolutions(race) com sistema de chance
+function EvolutionManager.TryEvolve(monsterData, trigger, opts)
+	local currentRace = monsterData and monsterData.Race
+	if not currentRace then
+		return false, "No current race on monsterData"
+	end
+
+	local options = Races:GetEvolutions(currentRace)
+	if not options or #options == 0 then
+		return false, ("No evolutions available for %s"):format(tostring(currentRace))
+	end
+
+	local currentStage = Races:GetStage(currentRace)
+	local ctx = {
+		race = currentRace,
+		stage = currentStage,
+		stats = monsterData.Stats or {},
+		bond = monsterData.Bond or 0,
+		wins = monsterData.Wins or 0,
+		sessionTime = monsterData.SessionTime or 0,
+		careMistakes = monsterData.CareMistakes or 0,
+		personality = monsterData.Personality,
+		baseRaceFamily = monsterData.BaseRaceFamily,
+		cameFrom = currentRace,
+		history = monsterData.History or {},
+		trigger = trigger or "manual",
+		evoItem = opts and opts.evoItem or nil,
+	}
+
+	-- Filter eligible evolutions based on gates
+	local eligible = {}
+	for _, evo in ipairs(options) do
+		if meetsGates(ctx, evo.gates) then
+			-- Calculate evolution chance
+			local chance = EvoDef:GetEvolutionChance(currentRace, ctx, evo)
+
+			-- Trigger-based multipliers
+			if trigger == "combat" then
+				chance = chance * 1.2 -- 20% bonus for combat trigger
+			elseif trigger == "training" then
+				chance = chance * 1.1 -- 10% bonus for training trigger
+			elseif trigger == "item" and ctx.evoItem then
+				chance = 1.0 -- Evolution items guarantee evolution if requirements met
+			end
+
+			-- Bonus based on wins
+			if ctx.wins >= 20 then
+				chance = chance * 1.3
+			elseif ctx.wins >= 10 then
+				chance = chance * 1.15
+			end
+
+			-- Bonus based on bond
+			if ctx.bond >= 70 then
+				chance = chance * 1.2
+			elseif ctx.bond >= 40 then
+				chance = chance * 1.1
+			end
+
+			-- Cap chance at 0.99 to keep some RNG
+			chance = math.min(0.99, chance)
+
+			table.insert(eligible, {
+				target = evo.target,
+				chance = chance,
+				gates = evo.gates,
+				weights = evo.weights,
+			})
+			print(chance, eligible)
+		end
+	end
+
+	if #eligible == 0 then
+		return false, "Evolution requirements not met"
+	end
+	print(eligible)
+	-- Sort by chance (highest first)
+	table.sort(eligible, function(a, b)
+		return (a.chance or 0) > (b.chance or 0)
+	end)
+
+	-- Roll for evolution with the best candidate
+	local best = eligible[1]
+	local roll = math.random()
+	print(best.chance, best.target)
+	if roll <= best.chance then
+		return true, best.target, best.chance
+	else
+		return false, string.format("Evolution roll failed (%.1f%% chance, rolled %.1f%%)", 
+			best.chance * 100, roll * 100)
+	end
+end
+
+-- Inicia o processo de evolução (chamado via Remote ou server)
+-- trigger: "manual", "combat", "training", or "item" (optional, defaults to "manual")
+-- opts: optional table { evoItem = itemId }
+function EvolutionManager.StartEvolution(player: Player, playerData, trigger, opts)
+	trigger = trigger or "manual"
+	opts = opts or {}
+	if not player or not player.UserId then
+		return false, "Invalid player"
+	end
+
+	if not playerData then
+		warn("[EvolutionManager] No playerData for", player)
+		return false, "No player data"
+	end
+
+	-- Decide evolução
+	local ok, targetOrReason, chance = EvolutionManager.TryEvolve(playerData, trigger, opts)
+	if not ok then
+		return false, targetOrReason -- <- AGORA RETORNA MOTIVO
+	end
+
+	-- Log evolution attempt
+	print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)", 
+		player.Name, trigger, (chance or 0) * 100))
+
+	-- Pega posição atual p/ o FX e reposicionamento
+	local currentModel = EvolutionManager.FindPlayerMonster(player)
+	local pivotCFrame = currentModel and currentModel:GetPivot()
+		or (player.Character and player.Character:GetPivot())
+		or CFrame.new()
+
+	-- Dispara FX no cliente
+	EvolutionEffect:FireClient(player, pivotCFrame.Position, targetOrReason)
+
+	-- Agenda a aplicação real (continua assíncrono)
+	task.delay(EFFECT_DURATION, function()
+		EvolutionManager.CompleteEvolution(player, targetOrReason, pivotCFrame)
+	end)
+
+	return true, targetOrReason -- <- AGORA SINALIZA “começou” e qual alvo
+end
+
+-- ===== Moves Merge Config =====
+-- Max moves enforced: When a new move is learned and the monster already has 4 moves,
+-- the lowest rarity move (excluding BasicAttack) will be replaced.
+-- Priority order: BasicAttack > Rarity (Primordial > Ascended > Specialist > Advanced > Amateur)
+local MAX_MOVES = 4
+
+local RARITY_ORDER = { Amateur = 1, Advanced = 2, Specialist = 3, Ascended = 4, Primordial = 5 }
+local function rarityScore(mv)
+	return RARITY_ORDER[(mv and mv.rarity) or "Amateur"] or 1
+end
+
+local MAX_MOVES = 4
+
+local function toMoveObj(entry)
+	if not entry then return nil end
+	if typeof(entry) == "string" then
+		local mv = Moves:GetMove(nil, entry)
+		return mv and { move = mv, rarity = mv.rarity } or nil
+	elseif typeof(entry) == "table" then
+		if entry.move and entry.move.id then return { move = entry.move, rarity = entry.rarity or entry.move.rarity } end
+		if entry.id then return { move = entry, rarity = entry.rarity} end
+	end
+	return nil
+end
+
+local function dedupe(list)
+	local seen, out = {}, {}
+	for _, e in ipairs(list or {}) do
+		local obj = toMoveObj(e)
+		if obj and obj.move and obj.move.id and not seen[obj.move.id] then
+			table.insert(out, obj); seen[obj.move.id] = true
+		end
+	end
+	return out
+end
+
+local function ensureBasicAttack(list)
+	for _, e in ipairs(list) do if e.move.id == "BasicAttack" then return end end
+	local ba = Moves:GetMove(nil, "BasicAttack")
+	if ba then table.insert(list, { move = ba, rarity = ba.rarity }) end
+end
+
+local function trimToMax(list, maxCount)
+	if #list <= maxCount then return list end
+
+	-- Sort priority:
+	-- 1. BasicAttack always kept (highest priority)
+	-- 2. Highest rarity moves kept
+	-- 3. In case of tie, keep newer moves (later in list)
+	table.sort(list, function(a,b)
+		-- BasicAttack always comes first
+		if a.move.id == "BasicAttack" and b.move.id ~= "BasicAttack" then return true end
+		if b.move.id == "BasicAttack" and a.move.id ~= "BasicAttack" then return false end
+
+		-- Compare by rarity
+		local aScore = rarityScore(a)
+		local bScore = rarityScore(b)
+		if aScore ~= bScore then
+			return aScore > bScore
+		end
+
+		-- If same rarity, keep the one that appears later (newer)
+		-- We don't have timestamps, so this is best effort
+		return false
+	end)
+
+	local cut = {}
+	for i=1, maxCount do cut[i] = list[i] end
+	return dedupe(cut)
+end
+
+-- In EvolutionManager.CompleteEvolution function, update the move handling:
+
+local function toMoveReference(entry)
+	if not entry then return nil end
+	if typeof(entry) == "string" then
+		return {id = entry, rarity = "Amateur"}
+	elseif typeof(entry) == "table" then
+		if entry.id then
+			return {id = entry.id, rarity = entry.rarity or "Amateur"}
+		elseif entry.move and entry.move.id then
+			return {id = entry.move.id, rarity = entry.rarity or entry.move.rarity or "Amateur"}
+		end
+	end
+	return nil
+end
+
+local function mergeMovesKeepingOld(prevMoves, startersAnyFormat, newRace)
+	local merged = {}
+	local seen = {}
+
+	-- Add previous moves
+	for _, entry in ipairs(prevMoves or {}) do
+		local ref = toMoveReference(entry)
+		if ref and ref.id and not seen[ref.id] then
+			table.insert(merged, ref)
+			seen[ref.id] = true
+		end
+	end
+
+	-- Add starter moves
+	for _, starter in ipairs(startersAnyFormat or {}) do
+		local ref = toMoveReference(starter)
+		if ref and ref.id and not seen[ref.id] then
+			table.insert(merged, ref)
+			seen[ref.id] = true
+		end
+	end
+
+	-- Ensure BasicAttack is always present
+	if not seen.BasicAttack then
+		table.insert(merged, {id = "BasicAttack", rarity = "Amateur"})
+		seen.BasicAttack = true
+	end
+
+	-- Trim to max moves, keeping highest rarity
+	if #merged > MAX_MOVES then
+		table.sort(merged, function(a, b)
+			if a.id == "BasicAttack" then return true end
+			if b.id == "BasicAttack" then return false end
+
+			local aScore = rarityScore(a)
+			local bScore = rarityScore(b)
+			if aScore ~= bScore then
+				return aScore > bScore
+			end
+			return false
+		end)
+
+		while #merged > MAX_MOVES do
+			table.remove(merged)
+		end
+	end
+
+	return merged
+end
+
+local function chooseInherited(prevMoves)
+	-- pick by highest rarity, or your own heuristic
+	local order = {Amateur=1, Advanced=2, Specialist=3, Ascended=4, Primordial=5}
+	local best, bestScore = nil, -1
+	for _, e in ipairs(prevMoves or {}) do
+		local mv = e.move or e
+		local s = order[(e.rarity or mv.rarity or "Amateur")] or 1
+		if mv and mv.id ~= "BasicAttack" and s > bestScore then
+			best = mv; bestScore = s
+		end
+	end
+	return best
+end
+
+-- Aplica a evolução de fato (atualiza dados, reconstrói, reposiciona, notifica)
+function EvolutionManager.CompleteEvolution(player: Player, newRaceName: string, oldPivot: CFrame?)
+	if not player then return end
+
+	local playerData = _G.DATA:Get(player.UserId).Monster
+	if not playerData then
+		warn("[EvolutionManager] No playerData on CompleteEvolution")
+		return
+	end
+
+	local oldRace = playerData.Race
+
+	-- Atualiza playerData
+	playerData.Race = newRaceName
+	playerData.Stage = Races:GetStage(newRaceName)
+	-- snapshot para cálculo (pairs pode falhar direto no proxy)
+
+	applyEvolutionGainsInPlace(playerData.Stats, playerData.Stage)
+
+
+
+	-- Save previous moves for inheritance
+	local previousMoves = {}
+	for _, e in ipairs(playerData.Moves or {}) do
+		table.insert(previousMoves, e)
+	end
+
+	-- Get starter moves for new race
+	local startersList = EvoDef:GetMovesForRace(newRaceName, {
+		personality  = playerData.Personality,
+		previousMoves= previousMoves,
+		stats        = playerData.Stats,
+	}) or {}
+
+	-- Resolve move unlocks from evolution trigger (this handles inherited moves)
+	local gained = MoveUnlocks.ResolveUnlocks(playerData, "evolution", {
+		from = oldRace,
+		previousMoves = previousMoves
+	})
+
+	-- Merge moves: previous moves + starters for new race
+	-- The MoveUnlocks.ResolveUnlocks already added unlocked moves to playerData.Moves
+	-- So we just need to merge with starters
+	playerData.Moves = mergeMovesKeepingOld(playerData.Moves, startersList, newRaceName)
+
+	playerData.History = playerData.History or {}
+	table.insert(playerData.History, newRaceName)
+
+	-- Destroi o modelo atual (para evitar duplicatas)
+	local currentModel = EvolutionManager.FindPlayerMonster(player)
+	if currentModel then
+		currentModel:Destroy()
+	end
+
+
+
+	-- Reconstrói com os dados atualizados
+	local okBuild, res = pcall(function()
+		-- We use a wrapper in Shared.luau, but the core logic is in MonsterGenerator
+		return _G.SHARED.BuildMonster(playerData, player.UserId, { force = true })
+	end)
+
+	if not okBuild or not res then
+		warn("[EvolutionManager] Build after evolution failed:", tostring(res))
+		return
+	end
+
+	print("Evolution completed for " .. player.Name .. "'s " .. oldRace .. " -> " .. newRaceName)
+
+	-- Reposiciona no pivot antigo (se existir)
+	task.wait(0.2)
+	local newModel = EvolutionManager.FindPlayerMonster(player)
+	if newModel then
+		if oldPivot then newModel:PivotTo(oldPivot) end
+
+		local hum = newModel:FindFirstChildOfClass("Humanoid")
+		if hum then
+			local hpStat = playerData.Stats.Hp or playerData.Stats.HP or hum.MaxHealth
+			-- mantém a proporção de vida (ou cure 100% se preferir)
+			local oldMax = hum.MaxHealth > 0 and hum.MaxHealth or 1
+			local ratio = math.clamp(hum.Health / oldMax, 0, 1)
+			hum.MaxHealth = math.max(1, math.floor(hpStat))
+			hum.Health = math.max(1, math.floor(hum.MaxHealth * ratio))  -- ou: hum.Health = hum.MaxHealth
+		end
+
+		newModel:SetAttribute("MP", playerData.Stats.Mp or playerData.Stats.MP or 50)
+
+		-- Atualiza moves no modelo (seu helper)
+		if _G.SHARED and _G.SHARED.UpdateMonsterMoves then
+			_G.SHARED.UpdateMonsterMoves(newModel, playerData.Moves)
+		end
+	end
+
+	-- Notifica conclusão
+	EvolutionComplete:FireClient(player, newRaceName)
+end
+
+-- ===== Evolution Check After Triggers =====
+
+-- Check for evolution after a trigger event (combat/training)
+-- Automatically attempts evolution if requirements are close to being met
+function EvolutionManager.CheckEvolutionTrigger(player: Player, trigger: string, opts)
+	if not player or not player.UserId then return false end
+
+	local playerData = _G.DATA and _G.DATA:Get(player.UserId).Monster
+	if not playerData then return false end
+
+	-- Check if evolution is possible
+	local currentRace = playerData.Race
+	local options = Races:GetEvolutions(currentRace)
+	if not options or #options == 0 then return false end
+
+	-- Try to evolve with the trigger
+	local ok, result = EvolutionManager.StartEvolution(player, playerData, trigger, opts)
+	if ok then
+		print(string.format("[EvolutionManager] Auto-evolution successful for %s after %s", 
+			player.Name, trigger))
+		return true, result
+	else
+		-- Log why evolution didn't happen (helpful for debugging)
+		print(string.format("[EvolutionManager] Evolution check for %s after %s: %s", 
+			player.Name, trigger, tostring(result)))
+		return false, result
+	end
+end
+
+-- ===== Inicialização e binding de Remotes =====
+
+function EvolutionManager.Init()
+	-- Evita múltiplos binds (idempotente)
+	if EvolutionManager._inited then return end
+	EvolutionManager._inited = true
+
+	-- Request vindo do client
+	EvolutionRequest.OnServerEvent:Connect(function(player)
+		-- The handler in Shared.luau now calls this directly.
+		-- No need to bind here again.
+	end)
+
+	-- Export to global for easy access from other systems
+	_G.EVOLUTION = EvolutionManager
+	print("[EvolutionManager] Initialized and registered to _G.EVOLUTION")
+end
+
+return EvolutionManager
