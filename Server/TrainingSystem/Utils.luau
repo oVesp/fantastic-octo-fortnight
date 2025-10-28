@@ -5,41 +5,58 @@ local Personalities = require(RS.Modules.Personalities)
 local Utils = {}
 
 local function findStatsTableForMonster(player, monster)
-	if not (_G and _G.DATA and player) then return nil end
-	local ok, data = pcall(function()
-		return _G.DATA:Get(player).Monster -- proxy table
+	if not (_G and _G.DATA and player) then
+		return nil
+	end
+
+	local ok, store = pcall(function()
+		return _G.DATA:Get(player)
 	end)
-	if not ok or type(data) ~= "table" then return nil end
-
-	-- 1) Simple schema (template at root)
-	if type(data.Stats) == "table" then
-		return data.Stats
+	if not ok or type(store) ~= "table" then
+		return nil
 	end
 
-	-- 2) Common alt schemas
-	-- 2a) ActiveMonster
-	if type(data.ActiveMonster) == "table" and type(data.ActiveMonster.Stats) == "table" then
-		return data.ActiveMonster.Stats
+	local monsterData = store.Monster
+	if type(monsterData) ~= "table" then
+		return nil
 	end
-	-- 2b) Monsters array/table keyed by id
-	local monsterId = monster:GetAttribute("id") or monster:GetAttribute("Id")
-	if type(data.Monsters) == "table" then
+
+	if type(monsterData.Stats) == "table" then
+		return monsterData.Stats
+	end
+
+	local activeMonster = monsterData.ActiveMonster
+	if type(activeMonster) == "table" and type(activeMonster.Stats) == "table" then
+		return activeMonster.Stats
+	end
+
+	local monsterId
+	if monster then
+		monsterId = monster:GetAttribute("id") or monster:GetAttribute("Id")
+	end
+
+	local monsters = monsterData.Monsters
+	if type(monsters) == "table" then
 		if monsterId then
-			for _, m in pairs(data.Monsters) do
+			local directMatch = monsters[monsterId]
+			if type(directMatch) == "table" and type(directMatch.Stats) == "table" then
+				return directMatch.Stats
+			end
+
+			for _, m in pairs(monsters) do
 				if type(m) == "table" and (m.id == monsterId or m.Id == monsterId) and type(m.Stats) == "table" then
 					return m.Stats
 				end
 			end
 		end
-		-- fallback: first entry with Stats
-		for _, m in pairs(data.Monsters) do
+
+		for _, m in pairs(monsters) do
 			if type(m) == "table" and type(m.Stats) == "table" then
 				return m.Stats
 			end
 		end
 	end
 
-	-- 3) Fallback: nil (no persistent write)
 	return nil
 end
 
