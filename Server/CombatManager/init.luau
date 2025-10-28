@@ -45,9 +45,9 @@ local combatParticipants = {}
 local combatLoopConnection = nil
 local onCombatEndCallbacks = {}
 local DEFAULT_ATTACK = {
-	id = "DefaultAttack",
-	name = "Default Attack",
-	rarity = "Amateur",
+        id = "DefaultAttack",
+        name = "Default Attack",
+        rarity = "Amateur",
 	power = 8,
 	cooldown = 1.5,
 	minRange = 0,
@@ -59,8 +59,38 @@ local DEFAULT_ATTACK = {
 	tags = {"Melee", "Universal"},
 	accuracy = 0.92,
 	critChance = 0.03,
-	mpCost = 0
+        mpCost = 0
 }
+
+local function effectTypeOf(entry)
+        if typeof(entry) == "table" then
+                return entry.type
+        end
+        return entry
+end
+
+local function moveHasEffect(move, effectType)
+        local effects = move and move.effects
+        if not effects then
+                return false
+        end
+        for _, entry in ipairs(effects) do
+                if effectTypeOf(entry) == effectType then
+                        return true
+                end
+        end
+        return false
+end
+
+local function iterateMoveEffects(move, callback)
+        local effects = move and move.effects
+        if not effects then
+                return
+        end
+        for _, entry in ipairs(effects) do
+                callback(effectTypeOf(entry), entry)
+        end
+end
 
 local STAT_SYNC_RULES = {
         Hp = { attr = "Hp", alias = "HP" },
@@ -1129,7 +1159,6 @@ local function computeUtilityOptions(participant, context)
 
         for _, move in ipairs(readyMoves) do
                 local tags = move.tags or {}
-                local effects = move.effects or {}
                 local isUtility = false
 
                 if (move.power or 0) <= 0 then
@@ -1144,12 +1173,11 @@ local function computeUtilityOptions(participant, context)
                 end
 
                 if not isUtility then
-                        for _, effect in ipairs(effects) do
-                                if effect == "BuffSelf" or effect == "Shield" or effect == "Haste" or effect == "FortifyAura" or effect == "Invulnerability" then
+                        iterateMoveEffects(move, function(effectType)
+                                if effectType == "BuffSelf" or effectType == "Shield" or effectType == "Haste" or effectType == "FortifyAura" or effectType == "Invulnerability" then
                                         isUtility = true
-                                        break
                                 end
-                        end
+                        end)
                 end
 
                 if isUtility then
@@ -1159,11 +1187,11 @@ local function computeUtilityOptions(participant, context)
                                 score += 15
                         end
 
-                        if table.find(effects, "Shield") then
+                        if moveHasEffect(move, "Shield") then
                                 score += context.isPressured and 25 or 12
                         end
 
-                        if table.find(effects, "BuffSelf") then
+                        if moveHasEffect(move, "BuffSelf") then
                                 if hasGuard then
                                         score -= 18
                                 else
@@ -1171,7 +1199,7 @@ local function computeUtilityOptions(participant, context)
                                 end
                         end
 
-                        if table.find(effects, "Haste") then
+                        if moveHasEffect(move, "Haste") then
                                 if hasHaste then
                                         score -= 12
                                 else
@@ -1179,7 +1207,7 @@ local function computeUtilityOptions(participant, context)
                                 end
                         end
 
-                        if table.find(effects, "FortifyAura") then
+                        if moveHasEffect(move, "FortifyAura") then
                                 score += 8
                         end
 
@@ -1244,7 +1272,7 @@ function CombatManager.SelectTacticalMove(participant, context)
                                 score = score + 25
                         end
 
-                        if context.isPressured and move.effects and table.find(move.effects, "Stun") then
+                        if context.isPressured and moveHasEffect(move, "Stun") then
                                 score = score + 25
                         end
 
@@ -1374,7 +1402,6 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 	local attStats = getEffectiveStats(attacker)
 	local tgtStats = getEffectiveStats(target)
         local tags = move.tags or {}
-        local effects = move.effects or {}
         local isUtilityMove = (move.power or 0) <= 0
 
         if not isUtilityMove then
@@ -1387,12 +1414,11 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
         end
 
         if not isUtilityMove then
-                for _, effect in ipairs(effects) do
-                        if effect == "BuffSelf" or effect == "Shield" or effect == "FortifyAura" or effect == "Haste" or effect == "Invulnerability" then
+                iterateMoveEffects(move, function(effectType)
+                        if effectType == "BuffSelf" or effectType == "Shield" or effectType == "FortifyAura" or effectType == "Haste" or effectType == "Invulnerability" then
                                 isUtilityMove = true
-                                break
                         end
-                end
+                end)
         end
 
         if not isUtilityMove then
@@ -1495,80 +1521,114 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 end
 
 function CombatManager.ApplyMoveEffects(attacker, target, move)
-	if not move.effects then return end
+        if not move or not move.effects or #move.effects == 0 then
+                return
+        end
 
-	local EFFECT_MAP = {
-		Slow = "Slow", Stun = "Stun", Burn = "Burn", 
-		DamageOverTime = "Poison", Shield = "Shield", 
-		BuffSelf = "GuardUp", Haste = "Haste", 
-		Silence = "Silence", Root = "Root", 
-		Invulnerability = "Invulnerability", Disarm = "Weaken", Pull = "Root"
-	}
+        local function resolveRecipient(effect)
+                local destination = effect.target
+                if destination == "attacker" or destination == "self" then
+                        return attacker
+                end
+                return target
+        end
 
-	for _, effect in ipairs(move.effects) do
-		local name = EFFECT_MAP[effect]
-		if name == "Shield" then
-			StatusEffects.Apply(target, {name = "Shield", dur = 6, power = 20}, attacker)
-			-- Shield aura effect
-			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
-				_G.EFFECTS.AuraEffect({
-					Name = "ShieldAura",
-					LocationParts = {target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")},
-					Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
-					Duration = 6,
-					AuraReference = "Shield"
-				})
-			end
-		elseif name and name ~= "GuardUp" and name ~= "Haste" then
-			local dur = (name == "Stun") and 1.0 or 6.0
-			StatusEffects.Apply(target, {name = name, dur = dur}, attacker)
-		end
-	end
+        local function buildPayload(effect)
+                return {
+                        name = effect.status,
+                        dur = effect.duration or 0,
+                        stacks = effect.stacks or 1,
+                        power = effect.power,
+                        dps = effect.dps,
+                }
+        end
 
-	for _, effect in ipairs(move.effects) do
-                if effect == "BuffSelf" then
-                        StatusEffects.Apply(attacker, {name = "GuardUp", dur = 6.0}, attacker)
-                        -- Buff aura effect
-                        if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+        local function applyStatus(recipient, effect)
+                if not recipient or not effect.status then
+                        return
+                end
+                StatusEffects.Apply(recipient, buildPayload(effect), attacker)
+        end
+
+        local function findAuraPart(model)
+                if not model then
+                        return nil
+                end
+                return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+        end
+
+        iterateMoveEffects(move, function(effectType, entry)
+                local effect = typeof(entry) == "table" and entry or { type = effectType, status = effectType }
+                effect.status = effect.status or effectType
+                effect.stacks = effect.stacks or 1
+
+                if effectType == "FortifyAura" then
+                        if attacker then
+                                local alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
+                                applyStatus(attacker, effect)
+                                if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+                                        local basePart = findAuraPart(attacker)
+                                        if basePart then
+                                                _G.EFFECTS.AuraEffect({
+                                                        Name = "FortifyAura",
+                                                        LocationParts = {basePart},
+                                                        Color = ColorSequence.new({
+                                                                ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
+                                                                ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
+                                                        }),
+                                                        Duration = alreadyFortified and (effect.refreshDuration or effect.duration or 0) or (effect.duration or 0),
+                                                        AuraReference = "Fortify",
+                                                })
+                                        end
+                                end
+                        end
+                        return
+                end
+
+                local recipient = resolveRecipient(effect)
+                if effect.status and recipient then
+                        applyStatus(recipient, effect)
+                end
+
+                if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
+                        return
+                end
+
+                if effectType == "Shield" then
+                        local basePart = findAuraPart(recipient)
+                        if basePart then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "ShieldAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
+                                        Duration = effect.duration or 0,
+                                        AuraReference = "Shield",
+                                })
+                        end
+                elseif effectType == "BuffSelf" then
+                        local basePart = findAuraPart(attacker)
+                        if basePart then
                                 _G.EFFECTS.AuraEffect({
                                         Name = "BuffAura",
-                                        LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
+                                        LocationParts = {basePart},
                                         Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
-                                        Duration = 6,
-                                        AuraReference = "GuardUp"
+                                        Duration = effect.duration or 0,
+                                        AuraReference = "GuardUp",
                                 })
                         end
-                elseif effect == "Haste" then
-                        StatusEffects.Apply(attacker, {name = "Haste", dur = 5.0}, attacker)
-			-- Haste aura effect
-			if _G.EFFECTS and _G.EFFECTS.AuraEffect then
-				_G.EFFECTS.AuraEffect({
-					Name = "SpeedAura",
-					LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
-					Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
-					Duration = 5,
-                                AuraReference = "Haste"
-                        })
-                end
-                elseif effect == "Invulnerability" then
-                        StatusEffects.Apply(attacker, {name = "Invulnerability", dur = 1.0}, attacker)
-                elseif effect == "FortifyAura" then
-                        local alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
-                        StatusEffects.Apply(attacker, {name = "GuardUp", dur = 8.0}, attacker)
-                        if _G.EFFECTS and _G.EFFECTS.AuraEffect then
+                elseif effectType == "Haste" then
+                        local basePart = findAuraPart(attacker)
+                        if basePart then
                                 _G.EFFECTS.AuraEffect({
-                                        Name = "FortifyAura",
-                                        LocationParts = {attacker.PrimaryPart or attacker:FindFirstChildWhichIsA("BasePart")},
-                                        Color = ColorSequence.new({
-                                                ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
-                                                ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
-                                        }),
-                                        Duration = alreadyFortified and 4 or 8,
-                                        AuraReference = "Fortify"
+                                        Name = "SpeedAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
+                                        Duration = effect.duration or 0,
+                                        AuraReference = "Haste",
                                 })
                         end
                 end
-        end
+        end)
 end
 
 -- Target Selection

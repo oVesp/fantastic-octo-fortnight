@@ -8,7 +8,10 @@ local VoidRay = {
 	minRange = 6,
 	maxRange = 18,
 	castTime = 0.9,
-	effects = {"Debuff"},
+        effects = {
+                { type = "DamageOverTime", duration = 8, dps = 6, stacks = 1, status = "Burn" },
+                { type = "Slow", duration = 4 },
+        },
 	tags = {"Magic", "Progenitor", "Ranged"},
 }
 

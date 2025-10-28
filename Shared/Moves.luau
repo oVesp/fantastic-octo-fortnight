@@ -4,7 +4,7 @@ Moves.__index = Moves
 
 -- Constantes e configurações padrão
 local DEFAULTS = {
-	baseAccuracy = 0.88,
+        baseAccuracy = 0.88,
 	baseCrit = 0.05,
 	mpCostBase = 0,
 	mpPerPower = 0.30,
@@ -44,17 +44,98 @@ local DEFAULTS = {
 		Universal = 1.00,
 	},
 	castAccuracyPenaltyPerSec = 0.06,
-	rangeAccuracyPenaltyPer10 = 0.015,
+        rangeAccuracyPenaltyPer10 = 0.015,
+}
+
+local EFFECT_DEFAULTS = {
+        Slow = { status = "Slow", target = "target", duration = 6 },
+        Stun = { status = "Stun", target = "target", duration = 1 },
+        Burn = { status = "Burn", target = "target", duration = 6, dps = 4 },
+        DamageOverTime = { status = "Poison", target = "target", duration = 6, dps = 3 },
+        Shield = { status = "Shield", target = "target", duration = 6, power = 20 },
+        BuffSelf = { status = "GuardUp", target = "attacker", duration = 6 },
+        Haste = { status = "Haste", target = "attacker", duration = 5 },
+        Silence = { status = "Silence", target = "target", duration = 6 },
+        Root = { status = "Root", target = "target", duration = 6 },
+        Invulnerability = { status = "Invulnerability", target = "attacker", duration = 1 },
+        Disarm = { status = "Weaken", target = "target", duration = 6 },
+        Pull = { status = "Root", target = "target", duration = 1 },
+        FortifyAura = { status = "GuardUp", target = "attacker", duration = 8, refreshDuration = 4 },
 }
 
 -- Funções utilitárias locais
 local function clamp(x, a, b)
-	return math.max(a, math.min(b, x))
+        return math.max(a, math.min(b, x))
+end
+
+local function cloneValue(value)
+        if typeof(value) == "table" then
+                return table.clone(value)
+        end
+        return value
+end
+
+local function normalizeEffects(move)
+        local rawEffects = move.effects
+        if not rawEffects then
+                return
+        end
+
+        local normalized = {}
+        for _, entry in ipairs(rawEffects) do
+                local effect
+                local entryType = typeof(entry)
+                if entryType == "table" then
+                        effect = table.clone(entry)
+                elseif entryType == "string" then
+                        effect = { type = entry }
+                else
+                        effect = nil
+                end
+
+                if effect then
+                        local effectType = effect.type or effect.name or effect.status
+                        if typeof(effectType) == "string" then
+                                effect.type = effectType
+                                local defaults = EFFECT_DEFAULTS[effectType]
+                                if defaults then
+                                        for key, value in pairs(defaults) do
+                                                if effect[key] == nil then
+                                                        effect[key] = cloneValue(value)
+                                                end
+                                        end
+                                end
+
+                                effect.target = effect.target or (defaults and defaults.target) or "target"
+                                effect.stacks = effect.stacks or 1
+                                if effect.status == nil then
+                                        effect.status = (defaults and defaults.status) or effect.type
+                                end
+                                if effect.duration == nil then
+                                        effect.duration = (defaults and defaults.duration) or 0
+                                end
+                                if effect.power == nil and defaults and defaults.power ~= nil then
+                                        effect.power = defaults.power
+                                end
+                                if effect.dps == nil and defaults and defaults.dps ~= nil then
+                                        effect.dps = defaults.dps
+                                end
+
+                                table.insert(normalized, effect)
+                        else
+                                warn(string.format("[Moves] Ignoring malformed effect entry on move %s", tostring(move.id)))
+                        end
+                else
+                        warn(string.format("[Moves] Ignoring unsupported effect entry on move %s", tostring(move.id)))
+                end
+        end
+
+        move.effects = normalized
 end
 
 local function computeAccuracy(move)
-	local acc = DEFAULTS.baseAccuracy
-	if move.castTime and move.castTime > 0 then
+        local acc = DEFAULTS.baseAccuracy
+        if move.castTime and move.castTime > 0 then
 		acc = acc - (move.castTime * DEFAULTS.castAccuracyPenaltyPerSec)
 	end
 	local mr = move.maxRange or 0
@@ -115,9 +196,12 @@ end
 
 -- Normaliza um movimento, preenchendo os campos derivados se não estiverem definidos
 local function normalizeMove(move)
-	if move.accuracy == nil then
-		move.accuracy = computeAccuracy(move)
-	end
+        if move.effects then
+                normalizeEffects(move)
+        end
+        if move.accuracy == nil then
+                move.accuracy = computeAccuracy(move)
+        end
 	if move.critChance == nil then
 		move.critChance = computeCrit(move)
 	end
