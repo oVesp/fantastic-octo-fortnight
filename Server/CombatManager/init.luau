@@ -62,6 +62,87 @@ local DEFAULT_ATTACK = {
 	mpCost = 0
 }
 
+local STAT_SYNC_RULES = {
+        Hp = { attr = "Hp", alias = "HP" },
+        Mp = { attr = "MaxMP", fallbackAttr = "MP", alias = "MP" },
+        Strength = { attr = "Strength", alias = "STR" },
+        Defense = { attr = "Defense", alias = "DEF" },
+        Skill = { attr = "Skill", alias = "SKL" },
+        Speed = { attr = "Speed", alias = "SPD" },
+        Intelligence = { attr = "Intelligence", alias = "INT" },
+        Luck = { attr = "Luck", alias = "LCK" },
+}
+
+local function syncMonsterStatsIntoTables(model: Model?, targets: {table})
+        if not model then
+                return
+        end
+
+        local function readAttribute(rule)
+                local value = model:GetAttribute(rule.attr)
+                if typeof(value) ~= "number" and rule.fallbackAttr then
+                        value = model:GetAttribute(rule.fallbackAttr)
+                end
+                if typeof(value) ~= "number" and rule.attr == "Hp" then
+                        local hum = model:FindFirstChildOfClass("Humanoid")
+                        if hum then
+                                value = hum.MaxHealth
+                        end
+                end
+                return typeof(value) == "number" and value or nil
+        end
+
+        for _, stats in ipairs(targets) do
+                if type(stats) == "table" then
+                        for key, rule in pairs(STAT_SYNC_RULES) do
+                                local value = readAttribute(rule)
+                                if value then
+                                        stats[key] = value
+                                        if rule.alias then
+                                                stats[rule.alias] = value
+                                        end
+                                end
+                        end
+                end
+        end
+end
+
+local function gatherStatsTables(ownerId: number?, entry)
+        local targets = {}
+        local seen = setmetatable({}, { __mode = "k" })
+
+        local function push(tbl)
+                if type(tbl) ~= "table" then
+                        return
+                end
+                if not seen[tbl] then
+                        seen[tbl] = true
+                        table.insert(targets, tbl)
+                end
+        end
+
+        if entry and type(entry) == "table" and type(entry.Data) == "table" then
+                if type(entry.Data.Stats) ~= "table" then
+                        entry.Data.Stats = {}
+                end
+                push(entry.Data.Stats)
+        end
+
+        if ownerId and _G and _G.DATA and typeof(_G.DATA.Get) == "function" then
+                local ok, store = pcall(function()
+                        return _G.DATA:Get(ownerId)
+                end)
+                if ok and type(store) == "table" and type(store.Monster) == "table" then
+                        if type(store.Monster.Stats) ~= "table" then
+                                store.Monster.Stats = {}
+                        end
+                        push(store.Monster.Stats)
+                end
+        end
+
+        return targets
+end
+
 -- Utility Functions
 
 local function setTacticalState(participant, newState)
@@ -1347,21 +1428,17 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 			local pid = tonumber(ownerId or 0)
 			if pid and pid > 0 then
 				local entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
-				if entry and entry.Data then
-					entry.Data.Wins = m:GetAttribute("Wins") or entry.Data.Wins or 0
-					-- sync a few core stats back to Data if you rely on it elsewhere
-					entry.Data.Stats = entry.Data.Stats or {}
-					entry.Data.Stats.Hp = m:GetAttribute("Hp") or entry.Data.Stats.Hp
-					entry.Data.Stats.Mp = m:GetAttribute("MaxMP") or entry.Data.Stats.Mp
-					entry.Data.Stats.Strength = m:GetAttribute("Strength") or entry.Data.Stats.Strength
-					entry.Data.Stats.Defense = m:GetAttribute("Defense") or entry.Data.Stats.Defense
-					entry.Data.Stats.Skill = m:GetAttribute("Skill") or entry.Data.Stats.Skill
-					entry.Data.Stats.Speed = m:GetAttribute("Speed") or entry.Data.Stats.Speed
-					entry.Data.Stats.Intelligence = m:GetAttribute("Intelligence") or entry.Data.Stats.Intelligence
-				end
-			end
-		end
-	end
+                                if entry and entry.Data then
+                                        entry.Data.Wins = m:GetAttribute("Wins") or entry.Data.Wins or 0
+
+                                        local statsTargets = gatherStatsTables(pid, entry)
+                                        if #statsTargets > 0 then
+                                                syncMonsterStatsIntoTables(m, statsTargets)
+                                        end
+                                end
+                        end
+                end
+        end
 
 	-- Apply results to everyone
 	for _, participant in pairs(combatData.participants) do
