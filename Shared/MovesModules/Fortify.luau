@@ -10,7 +10,10 @@ local Fortify = {
 	castTime = 0.4,
 	castSpeed = 1.0,
 	lockMovement = true,
-        effects = {"BuffSelf", "FortifyAura"},
+        effects = {
+                { type = "BuffSelf", duration = 8 },
+                { type = "FortifyAura", duration = 8, refreshDuration = 4 },
+        },
         tags = {"Buff", "Defensive", "Construct"},
 
 	-- Overrides específicos para este movimento

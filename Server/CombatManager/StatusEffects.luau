@@ -2,7 +2,12 @@
 -- Sistema leve de efeitos com stacking controlado e modificadores de stats.
 -- Server-autoritative; client só visual (via _G.EFFECTS, se quiser).
 
-local RunService = game:GetService("RunService")
+local RunService do
+        local ok, service = pcall(function()
+                return game:GetService("RunService")
+        end)
+        RunService = ok and service or nil
+end
 
 local SE = {}
 
@@ -23,7 +28,7 @@ SE.DEFS = {
 	Stun         = { type="CC",     maxStacks=1,  pri=100, flags={ Stunned=true, NoMove=true, NoCast=true } },
 	Root         = { type="CC",     maxStacks=1,  pri=80,  flags={ NoMove=true } },
 
-	Shield       = { type="Shield", maxStacks=1,  pri=50,  shield=true }, -- valor definido na aplicação
+        Shield       = { type="Shield", maxStacks=1,  pri=50,  shield=true, defaultPower = 20 }, -- valor definido na aplicação
 	Invulnerability = { type="State", maxStacks=1, pri=200, flags={ Invuln=true } },
 }
 
@@ -53,25 +58,40 @@ function SE.Apply(target: Instance, info, source: Instance?)
 	local maxStacks = def.maxStacks or 1
 	local stacks = math.max(1, math.min(maxStacks, (info.stacks or 1)))
 
-	if not slot then
-		slot = { stacks = 0, expiresAt = 0, power = 0, source = source }
-		R.active[info.name] = slot
-	end
+        if not slot then
+                slot = { stacks = 0, expiresAt = 0, power = nil, dps = nil, source = source }
+                R.active[info.name] = slot
+        end
 
-	-- renovar duração e ajustar stacks
-	slot.expiresAt = now() + math.max(0.1, info.dur or 0)
-	slot.stacks = math.max(1, math.min(maxStacks, stacks))
-	slot.power = info.power or slot.power
-	slot.source = source or slot.source
+        -- renovar duração e ajustar stacks
+        local duration = math.max(0.1, info.dur or 0)
+        slot.expiresAt = now() + duration
+        slot.stacks = math.max(1, math.min(maxStacks, stacks))
+        slot.source = source or slot.source
 
-	-- Se for Shield, define HP da barreira proporcional ao power
-	if def.shield then
-		-- Se power não vier, define um default
-		local val = info.power or 20
-		R.shieldHp = math.max(R.shieldHp, val)
-	end
+        local powerValue = info.power
+        if powerValue == nil and def.shield then
+                powerValue = def.defaultPower
+        end
+        if powerValue ~= nil then
+                slot.power = powerValue
+        end
 
-	return true
+        local dpsValue = info.dps
+        if dpsValue == nil and def.dot and def.dot.dps ~= nil then
+                dpsValue = def.dot.dps
+        end
+        if dpsValue ~= nil then
+                slot.dps = dpsValue
+        end
+
+        -- Se for Shield, define HP da barreira proporcional ao power
+        if def.shield then
+                local shieldStrength = slot.power or def.defaultPower or 0
+                R.shieldHp = math.max(0, shieldStrength)
+        end
+
+        return true
 end
 
 function SE.Remove(target: Instance, name: string)
@@ -126,32 +146,41 @@ end
 -- Tick: expira efeitos e aplica DoTs
 -- callbackDamage(target, amount, source, tag) é usado para aplicar DoT (server authority)
 function SE.Tick(dt: number, callbackDamage)
-	-- Limpeza & DoTs
-	for target, R in pairs(STORE) do
-		for name, slot in pairs(R.active) do
-			if slot.expiresAt <= now() then
-				R.active[name] = nil
-			else
-				local def = SE.DEFS[name]
-				if def and def.dot and callbackDamage then
-					local dps = def.dot.dps * (slot.stacks or 1)
-					if dps > 0 then
-						callbackDamage(target, dps * dt, slot.source, name)
-					end
-				end
-			end
-		end
-	end
+        -- Limpeza & DoTs
+        for target, R in pairs(STORE) do
+                for name, slot in pairs(R.active) do
+                        if slot.expiresAt <= now() then
+                                R.active[name] = nil
+                        else
+                                local def = SE.DEFS[name]
+                                local dps = slot.dps
+                                if dps == nil and def and def.dot then
+                                        dps = def.dot.dps
+                                end
+                                if callbackDamage and dps and dps > 0 then
+                                        local stacks = slot.stacks or 1
+                                        callbackDamage(target, dps * stacks * dt, slot.source, name)
+                                end
+                        end
+                end
+        end
 end
 
 -- Loop de tick básico (opcional; ou chame SE.Tick do teu CombatManager)
 local ACC = 0
-RunService.Heartbeat:Connect(function(dt)
-	ACC += dt
-	if ACC >= 0.1 then -- 10 Hz
-		local cdt = ACC; ACC = 0
-		SE.Tick(cdt, nil) -- sem callback padrão; CombatManager pode setar o dele
-	end
-end)
+function SE._resetForTests()
+        table.clear(STORE)
+        ACC = 0
+end
+
+if RunService and RunService.Heartbeat and RunService.Heartbeat.Connect then
+        RunService.Heartbeat:Connect(function(dt)
+                ACC += dt
+                if ACC >= 0.1 then -- 10 Hz
+                        local cdt = ACC; ACC = 0
+                        SE.Tick(cdt, nil) -- sem callback padrão; CombatManager pode setar o dele
+                end
+        end)
+end
 
 return SE
