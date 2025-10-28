@@ -25,15 +25,33 @@ end
 
 -- Handler avançado para VFX customizado
 function FortifyVFX.cast(moveId, where, opts)
-	-- Implementação customizada de efeitos de lançamento
-	--_G.EFFECTS.AuraEffect
-	if _G.EFFECTS and _G.EFFECTS.AuraEffect then
-		_G.EFFECTS.AuraEffect({
-			Name = "FortifyAura",
-			Where = where,
-			Duration = 1
-		})
+	if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
+		return
 	end
+
+	local rootPart = where
+	if where and where:IsA("Model") then
+		rootPart = where.PrimaryPart or where:FindFirstChildWhichIsA("BasePart")
+	end
+	if not (rootPart and rootPart:IsA("BasePart")) then
+		return
+	end
+	local bodyParts = {}
+	for _, part in ipairs(where.Parent:GetChildren()) do
+		if part:IsA("BasePart") then
+			table.insert(bodyParts, part)
+		end
+	end
+	_G.EFFECTS.AuraEffect({
+		Name = "FortifyAura",
+		LocationParts = bodyParts,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255)),
+		}),
+		Duration = opts and opts.Duration or 8,
+		AuraReference = "Fortify",
+	})
 end
 
 function FortifyVFX.impact(moveId, where, opts)
