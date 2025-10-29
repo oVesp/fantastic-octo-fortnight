@@ -12,6 +12,7 @@ local EvolutionRequest = Remotes:FindFirstChild("EvolutionRequest")
 local UIRemote = Remotes:FindFirstChild("UIRemote")
 local OpenUIEvent = Remotes:FindFirstChild("OpenUI")
 local EvolutionComplete = Remotes:FindFirstChild("EvolutionComplete")
+local EvolutionEffectRemote = Remotes:FindFirstChild("EvolutionEffect")
 
 local GetMonsterDataEvent = ReplicatedStorage:WaitForChild("GetMonsterData")
 
@@ -456,6 +457,18 @@ end)
 if EvolutionComplete and EvolutionComplete:IsA("RemoteEvent") then
     EvolutionComplete.OnClientEvent:Connect(function()
         GetMonsterDataEvent:FireServer()
+    end)
+end
+
+if EvolutionEffectRemote and EvolutionEffectRemote:IsA("RemoteEvent") then
+    EvolutionEffectRemote.OnClientEvent:Connect(function(worldPos)
+        if typeof(worldPos) ~= "Vector3" then
+            return
+        end
+
+        if evolutionGui and evolutionGui:IsA("ScreenGui") then
+            evolutionGui.Enabled = false
+        end
     end)
 end
 

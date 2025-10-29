@@ -4,6 +4,9 @@ local EvolutionEffect = Remotes:WaitForChild("EvolutionEffect")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
+local ModulesFolder = RS:WaitForChild("Modules")
+local Races = require(ModulesFolder:WaitForChild("Races"))
+
 local EFFECTS = _G.EFFECTS or require(RS.Modules["Effects&SFX"])
 
 -- Evolution effect sequences for different stages
@@ -120,23 +123,29 @@ end
 
 -- Main evolution effect handler
 EvolutionEffect.OnClientEvent:Connect(function(worldPos, targetRaceName, targetStage)
-	local tier = getEvolutionTier(targetStage)
-	local effectSequence = EVOLUTION_EFFECTS[tier] or EVOLUTION_EFFECTS.Basic
+        if typeof(worldPos) ~= "Vector3" then
+                return
+        end
 
-	print("Playing " .. tier .. " evolution effect for " .. targetRaceName)
+        local resolvedRace = targetRaceName or "Unknown"
+        local resolvedStage = targetStage or Races:GetStage(resolvedRace) or "Proto"
+        local tier = getEvolutionTier(resolvedStage)
+        local effectSequence = EVOLUTION_EFFECTS[tier] or EVOLUTION_EFFECTS.Basic
 
-	-- Create central effect anchor and placeholder for aura
-	local anchor = Instance.new("Part")
-	anchor.Name = "EvolutionAnchor"
+        print(string.format("Playing %s evolution effect for %s", tier, resolvedRace))
+
+        -- Create central effect anchor and placeholder for aura
+        local anchor = Instance.new("Part")
+        anchor.Name = "EvolutionAnchor"
 	anchor.Size = Vector3.new(1, 1, 1)
 	anchor.Anchored = true
 	anchor.CanCollide = false
 	anchor.Transparency = 1
-	anchor.CFrame = CFrame.new(worldPos)
-	anchor.Parent = workspace.Debris
+        anchor.CFrame = CFrame.new(worldPos)
+        anchor.Parent = workspace.Debris
 
-	-- Create placeholder for aura effects
-	local auraPlaceholder = createEvolutionPlaceholder(worldPos)
+        -- Create placeholder for aura effects
+        local auraPlaceholder = createEvolutionPlaceholder(worldPos)
 
 	-- Store active effects for cleanup
 	local activeEffects = {}

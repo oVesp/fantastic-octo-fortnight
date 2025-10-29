@@ -310,39 +310,45 @@ end
 
 -- EvolutionRequest: start evolution process for player's current monster (server-side)
 EvolutionRequest.OnServerEvent:Connect(function(player)
-	if not player then return end
-	if not (_G and _G.DATA and type(_G.DATA.Get) == "function") then
-		warn("[Shared] EvolutionRequest: _G.DATA not available")
-		return
-	end
+        if not player then return end
+        if not (_G and _G.DATA and type(_G.DATA.Get) == "function") then
+                warn("[Shared] EvolutionRequest: _G.DATA not available")
+                return
+        end
 
-	local playerData = _G.DATA:Get(player.UserId)
-	if not playerData then
-		warn(("[Shared] EvolutionRequest: no player data for %s"):format(player.Name))
-		return
-	end
+        local playerData = _G.DATA:Get(player.UserId)
+        if not playerData then
+                warn(("[Shared] EvolutionRequest: no player data for %s"):format(player.Name))
+                return
+        end
 
-	if not (_G and _G.EVOLUTION and type(_G.EVOLUTION.StartEvolution) == "function") then
-		warn("[Shared] EvolutionRequest: EVOLUTION module not available")
-		return
-	end
+        if not (_G and _G.EVOLUTION and type(_G.EVOLUTION.StartEvolution) == "function") then
+                warn("[Shared] EvolutionRequest: EVOLUTION module not available")
+                return
+        end
 
-	local ok, res = pcall(function()
-		return _G.EVOLUTION.StartEvolution(player, playerData)
-	end)
+        local ok, success, resultOrReason = pcall(function()
+                return _G.EVOLUTION.StartEvolution(player, playerData)
+        end)
 
-	if ok and res then
-		print(("Evolution started for %s (%s)"):format(player.Name, tostring(playerData.Race or "unknown")))
-		-- Optionally notify client via EvolutionEffect/EvolutionComplete remotes
-		if EvolutionEffect then
-			EvolutionEffect:FireClient(player, { event = "start" })
-		end
-	else
-		warn(("Evolution failed for %s: %s"):format(player.Name, tostring(res)))
-		if EvolutionComplete then
-			EvolutionComplete:FireClient(player, { success = false, reason = tostring(res) })
-		end
-	end
+        if not ok then
+                warn(("Evolution failed for %s: %s"):format(player.Name, tostring(success)))
+                if EvolutionComplete then
+                        EvolutionComplete:FireClient(player, { success = false, reason = tostring(success) })
+                end
+                return
+        end
+
+        if success then
+                print(("Evolution started for %s (%s)"):format(player.Name, tostring(playerData.Race or "unknown")))
+        else
+                local reason = tostring(resultOrReason or "unknown reason")
+                local log = reason == "Evolution chance failed" and print or warn
+                log(("Evolution failed for %s: %s"):format(player.Name, reason))
+                if EvolutionComplete then
+                        EvolutionComplete:FireClient(player, { success = false, reason = reason })
+                end
+        end
 end)
 
 
