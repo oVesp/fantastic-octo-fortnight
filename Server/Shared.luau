@@ -110,10 +110,74 @@ function module.GetPlayerMonster(player)
 	return nil
 end
 
-UIRemote.OnServerEvent:Connect(function(plr, ui)
-	local ui = plr:WaitForChild("PlayerGui"):WaitForChild("MonsterSheetUI"):WaitForChild("MonsterSheet")
-	ui.Enabled = not ui.Enabled
-end)
+if UIRemote then
+        local function toggleMonsterSheet(playerGui: PlayerGui?)
+                if not playerGui then
+                        return
+                end
+
+                local sheetContainer = playerGui:FindFirstChild("MonsterSheetUI")
+                if not sheetContainer then
+                        return
+                end
+
+                local sheet = sheetContainer:FindFirstChild("MonsterSheet")
+                if not sheet then
+                        return
+                end
+
+                if sheet:IsA("ScreenGui") then
+                        sheet.Enabled = not sheet.Enabled
+                elseif sheet:IsA("GuiObject") then
+                        sheet.Visible = not sheet.Visible
+                end
+        end
+
+        local function toggleByName(player: Player, uiName: string?)
+                local playerGui = player:FindFirstChildWhichIsA("PlayerGui")
+                if not playerGui then
+                        return
+                end
+
+                if not uiName or uiName == "" or uiName == "MonsterSheet" or uiName == "MonsterSheetUI" then
+                        toggleMonsterSheet(playerGui)
+                        return
+                end
+
+                local target = playerGui:FindFirstChild(uiName)
+                if not target then
+                        local replicated = ReplicatedStorage:FindFirstChild(uiName)
+                        if replicated and replicated:IsA("ScreenGui") then
+                                target = replicated:Clone()
+                                target.Parent = playerGui
+                        end
+                end
+
+                if not target then
+                        return
+                end
+
+                if target:IsA("ScreenGui") then
+                        target.Enabled = not target.Enabled
+                elseif target:IsA("GuiObject") then
+                        target.Visible = not target.Visible
+                end
+        end
+
+        UIRemote.OnServerEvent:Connect(function(player: Player, uiName)
+                if not player or not player:IsA("Player") then
+                        return
+                end
+
+                if typeof(uiName) ~= "string" then
+                        uiName = nil
+                end
+
+                toggleByName(player, uiName)
+        end)
+else
+        warn("[Shared] UIRemote not found; UI toggle requests disabled.")
+end
 -- BuildMonster: wraps _G.MONSTERGENERATOR.BuildMonster safely and tracks monster for player or server
 -- data: data table for monster generator
 -- playerId: numeric UserId or nil for server monster
