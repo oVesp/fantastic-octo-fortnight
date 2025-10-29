@@ -36,6 +36,7 @@ local MoveUnlocks = require(RS.Modules.MoveUnlocks)
 
 -- Config
 local EFFECT_DURATION = 2.0 -- segundos antes de aplicar a evolução (tempo do VFX)
+local MINIMUM_GATED_WEIGHT = 0.01 -- Peso mínimo para evoluções com gates não cumpridos
 
 -- Multiplicadores por estágio (ajuste livre)
 -- Multiplicadores por estágio
@@ -163,18 +164,53 @@ function EvolutionManager.FindPlayerMonster(player: Player)
 	return nil
 end
 
-local function meetsGates(ctx, gates)
-	if not gates then return true end
-	if gates.baseRaceFamily and gates.baseRaceFamily ~= ctx.baseRaceFamily then return false end
-	if gates.minBond and (ctx.bond or 0) < gates.minBond then return false end
-	if gates.minWins and (ctx.wins or 0) < gates.minWins then return false end
-	if gates.maxCareMistakes and (ctx.careMistakes or 0) > gates.maxCareMistakes then return false end
-	if gates.minStats then
-		for stat, minV in pairs(gates.minStats) do
-			if (ctx.stats[stat] or 0) < minV then return false end
-		end
-	end
-	return true
+local function analyzeGates(ctx, gates)
+        if not gates then return true, {} end
+
+        local ok = true
+        local issues = {}
+
+        local function pushIssue(text)
+                table.insert(issues, text)
+        end
+
+        if gates.baseRaceFamily and gates.baseRaceFamily ~= ctx.baseRaceFamily then
+                ok = false
+                pushIssue(string.format("baseRaceFamily=%s (needs %s)", tostring(ctx.baseRaceFamily), tostring(gates.baseRaceFamily)))
+        end
+        if gates.minBond then
+                local bond = ctx.bond or 0
+                if bond < gates.minBond then
+                        ok = false
+                        pushIssue(string.format("bond=%d/%d", bond, gates.minBond))
+                end
+        end
+        if gates.minWins then
+                local wins = ctx.wins or 0
+                if wins < gates.minWins then
+                        ok = false
+                        pushIssue(string.format("wins=%d/%d", wins, gates.minWins))
+                end
+        end
+        if gates.maxCareMistakes then
+                local careMistakes = ctx.careMistakes or 0
+                if careMistakes > gates.maxCareMistakes then
+                        ok = false
+                        pushIssue(string.format("careMistakes=%d>%d", careMistakes, gates.maxCareMistakes))
+                end
+        end
+        if gates.minStats then
+                local stats = ctx.stats or {}
+                for stat, minV in pairs(gates.minStats) do
+                        local current = stats[stat] or 0
+                        if current < minV then
+                                ok = false
+                                pushIssue(string.format("%s=%d/%d", tostring(stat), current, minV))
+                        end
+                end
+        end
+
+        return ok, issues
 end
 
 -- ===== Core API =====
@@ -217,36 +253,54 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
         local totalWeight = 0
 
         for _, evo in ipairs(options) do
-                if meetsGates(ctx, evo.gates) then
-                        local baseChance = EvoDef:GetEvolutionChance(currentRace, ctx, evo)
-                        local weightMultiplier = 1
+                local gatesMet, gateIssues = analyzeGates(ctx, evo.gates)
+                local baseChance = EvoDef:GetEvolutionChance(currentRace, ctx, evo)
+                local weightMultiplier = 1
 
-                        if typeof(evo.weights) == "function" then
-                                local ok, value = pcall(evo.weights, ctx)
-                                if ok and typeof(value) == "number" then
-                                        weightMultiplier = math.max(0, value)
-                                end
-                        elseif typeof(evo.weights) == "number" then
-                                weightMultiplier = math.max(0, evo.weights)
+                if typeof(evo.weights) == "function" then
+                        local ok, value = pcall(evo.weights, ctx)
+                        if ok and typeof(value) == "number" then
+                                weightMultiplier = math.max(0, value)
                         end
+                elseif typeof(evo.weights) == "number" then
+                        weightMultiplier = math.max(0, evo.weights)
+                end
 
-                        local combinedWeight = math.max(0, baseChance * weightMultiplier)
+                local combinedWeight = math.max(0, baseChance * weightMultiplier)
+                local fallbackApplied = false
 
-                        if combinedWeight > 0 then
-                                totalWeight += combinedWeight
-                                table.insert(weightedOptions, {
-                                        target = evo.target,
-                                        weight = combinedWeight,
-                                        baseChance = baseChance,
-                                        weightMultiplier = weightMultiplier,
-                                        gates = evo.gates,
-                                })
-                        else
-                                table.insert(debugNotes, string.format("  - %s: base %.2f%% x %.3f = 0 (skipped)",
-                                        tostring(evo.target), (baseChance or 0) * 100, weightMultiplier))
+                if combinedWeight <= 0 and not gatesMet then
+                        combinedWeight = MINIMUM_GATED_WEIGHT
+                        fallbackApplied = true
+                end
+
+                if combinedWeight > 0 then
+                        totalWeight += combinedWeight
+                        table.insert(weightedOptions, {
+                                target = evo.target,
+                                weight = combinedWeight,
+                                baseChance = baseChance,
+                                weightMultiplier = weightMultiplier,
+                                gates = evo.gates,
+                                gatesMet = gatesMet,
+                                gateIssues = gateIssues,
+                                fallbackApplied = fallbackApplied,
+                        })
+
+                        if not gatesMet then
+                                local reason = (gateIssues and #gateIssues > 0)
+                                        and table.concat(gateIssues, ", ")
+                                        or "requirements pending"
+                                table.insert(debugNotes, string.format("  ! %s: gates unmet (%s)", tostring(evo.target), reason))
+                        end
+                        if fallbackApplied then
+                                table.insert(debugNotes, string.format(
+                                        "  ! %s: minimum weight %.4f applied", tostring(evo.target), combinedWeight
+                                ))
                         end
                 else
-                        table.insert(debugNotes, string.format("  x %s: gates unmet", tostring(evo.target)))
+                        table.insert(debugNotes, string.format("  - %s: base %.2f%% x %.3f = 0 (skipped)",
+                                tostring(evo.target), (baseChance or 0) * 100, weightMultiplier))
                 end
         end
 
@@ -281,8 +335,15 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
         print(string.format("[EvolutionManager]  total weight: %.4f", totalWeight))
         for _, option in ipairs(weightedOptions) do
                 local chancePct = (option.weight / totalWeight) * 100
-                print(string.format("[EvolutionManager]   -> %s : %.2f%% (base %.2f%% x %.3f)",
-                        tostring(option.target), chancePct, (option.baseChance or 0) * 100, option.weightMultiplier or 1))
+                local gateStatus = option.gatesMet and "met" or "unmet"
+                if option.fallbackApplied then
+                        gateStatus = gateStatus .. ", minimum chance"
+                end
+                print(string.format("[EvolutionManager]   -> %s : %.2f%% (base %.2f%% x %.3f) [gates: %s]",
+                        tostring(option.target), chancePct, (option.baseChance or 0) * 100, option.weightMultiplier or 1, gateStatus))
+                if not option.gatesMet and option.gateIssues and #option.gateIssues > 0 then
+                        print(string.format("[EvolutionManager]      unmet -> %s", table.concat(option.gateIssues, "; ")))
+                end
         end
         for _, line in ipairs(debugNotes) do
                 print("[EvolutionManager]   " .. line)
@@ -316,10 +377,17 @@ function EvolutionManager.StartEvolution(player: Player, playerData, trigger, op
                 return false, "No monster data"
         end
 
+        local currentLevel = monsterData.Level or monsterData.level or 1
+        if monsterData.LastEvolutionAttemptLevel == currentLevel then
+                return false, "Evolution already attempted at this level"
+        end
+
         local ok, targetOrReason, chance = EvolutionManager.TryEvolve(monsterData, trigger, opts)
         if not ok then
                 return false, targetOrReason
         end
+
+        monsterData.LastEvolutionAttemptLevel = currentLevel
 
         print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)",
                 player.Name, trigger, (chance or 0) * 100))
