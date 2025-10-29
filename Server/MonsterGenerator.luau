@@ -18,27 +18,30 @@ local UIB = require(RP.Modules.UIBillboards)
 
 -- Level ranges for each stage
 local STAGE_LEVEL_RANGES = {
-	Fledgeling = {1, 10},
-	Rookie = {11, 20},
-	Champion = {21, 30},
-	Elder = {31, 40},
-	Unique = {41, 50}
+        Proto = {1, 5},
+        Fledgeling = {6, 15},
+        Rookie = {16, 25},
+        Champion = {26, 35},
+        Elder = {36, 45},
+        Unique = {46, 50}
 }
 
 -- Function to get stage from level
 local function getStageFromLevel(level)
-	level = level or 1
-	if level <= 10 then
-		return "Fledgeling"
-	elseif level <= 20 then
-		return "Rookie"
-	elseif level <= 30 then
-		return "Champion"
-	elseif level <= 40 then
-		return "Elder"
-	else
-		return "Unique"
-	end
+        level = level or 1
+        if level <= 5 then
+                return "Proto"
+        elseif level <= 15 then
+                return "Fledgeling"
+        elseif level <= 25 then
+                return "Rookie"
+        elseif level <= 35 then
+                return "Champion"
+        elseif level <= 45 then
+                return "Elder"
+        else
+                return "Unique"
+        end
 end
 
 -- Function to apply level scaling to stats
@@ -84,13 +87,14 @@ local function applyMultipliers(stats, mult)
 end
 
 local function rollStats(stage)
-	local TOTAL_BY_STAGE = {
-		Fledgeling = 60,
-		Rookie = 80,
-		Champion = 100,
-		Elder = 120,
-		Unique = 140,
-	}
+        local TOTAL_BY_STAGE = {
+                Proto = 40,
+                Fledgeling = 60,
+                Rookie = 80,
+                Champion = 100,
+                Elder = 120,
+                Unique = 140,
+        }
 
 	local totalPoints = TOTAL_BY_STAGE[stage] or 60
 	local statsToDistribute = {"STR", "DEF", "SKL", "SPD", "INT", "LCK"}
