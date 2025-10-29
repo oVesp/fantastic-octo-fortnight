@@ -192,6 +192,10 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
         end
 
         local currentStage = Races:GetStage(currentRace)
+        if monsterData and monsterData.Stats then
+                Races:ClampStatsByStage(monsterData.Stats, currentStage)
+        end
+
         local ctx = {
                 race = currentRace,
                 stage = currentStage,
@@ -209,6 +213,7 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
         }
 
         local weightedOptions = {}
+        local debugNotes = {}
         local totalWeight = 0
 
         for _, evo in ipairs(options) do
@@ -236,11 +241,21 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
                                         weightMultiplier = weightMultiplier,
                                         gates = evo.gates,
                                 })
+                        else
+                                table.insert(debugNotes, string.format("  - %s: base %.2f%% x %.3f = 0 (skipped)",
+                                        tostring(evo.target), (baseChance or 0) * 100, weightMultiplier))
                         end
+                else
+                        table.insert(debugNotes, string.format("  x %s: gates unmet", tostring(evo.target)))
                 end
         end
 
         if totalWeight <= 0 then
+                print(string.format("[EvolutionManager] Evolution attempt for %s (%s) had no valid options",
+                        tostring(currentRace), tostring(currentStage)))
+                for _, line in ipairs(debugNotes) do
+                        print("\t" .. line)
+                end
                 return false, "Evolution requirements not met"
         end
 
@@ -261,6 +276,19 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
         end
 
         local finalChance = chosen.weight / totalWeight
+
+        print(string.format("[EvolutionManager] Evolution roll for %s (%s)", tostring(currentRace), tostring(currentStage)))
+        print(string.format("[EvolutionManager]  total weight: %.4f", totalWeight))
+        for _, option in ipairs(weightedOptions) do
+                local chancePct = (option.weight / totalWeight) * 100
+                print(string.format("[EvolutionManager]   -> %s : %.2f%% (base %.2f%% x %.3f)",
+                        tostring(option.target), chancePct, (option.baseChance or 0) * 100, option.weightMultiplier or 1))
+        end
+        for _, line in ipairs(debugNotes) do
+                print("[EvolutionManager]   " .. line)
+        end
+        print(string.format("[EvolutionManager]  roll value: %.4f / %.4f", roll, totalWeight))
+        print(string.format("[EvolutionManager]  selected: %s (%.2f%%)", tostring(chosen.target), finalChance * 100))
 
         return true, chosen.target, finalChance, {
                 selected = chosen,
@@ -503,7 +531,8 @@ function EvolutionManager.CompleteEvolution(player: Player, newRaceName: string,
         playerData.BaseRaceFamily = Races:GetBaseRaceFamily(newRaceName) or playerData.BaseRaceFamily
 	-- snapshot para cálculo (pairs pode falhar direto no proxy)
 
-	applyEvolutionGainsInPlace(playerData.Stats, playerData.Stage)
+        applyEvolutionGainsInPlace(playerData.Stats, playerData.Stage)
+        Races:ClampStatsByStage(playerData.Stats, playerData.Stage)
 
 
 

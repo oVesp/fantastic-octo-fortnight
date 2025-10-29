@@ -21,7 +21,7 @@ EvolutionDefs.RaceStage = {
 	-- Raptor line
 	--Raptor="Fledgeling", Dino="Rookie", Beast="Champion", Dragon="Elder", Behemoth="Elder",
 	-- Construct / Core line
-        GenesisLarva="Proto",
+        Blank="Proto",
         Core="Fledgeling", Golem="Rookie", Titan="Champion", Colossus="Elder", PrimordialConstruct="Unique",
 	-- Demonic line
 	Imp="Fledgeling", Devil="Rookie", Archdemon="Champion", AbyssLord="Elder",
@@ -192,7 +192,7 @@ end
 
 -- ===== Moves por Raça (raça decide por padrão) =====
 EvolutionDefs.MovesByRace = {
-        GenesisLarva = { "BasicAttack" },
+        Blank = { "BasicAttack" },
         -- Raptor
         Raptor = { "Tackle", "Bite" },
 	Dino = { "Crush", "Roar", "TailSwipe" },

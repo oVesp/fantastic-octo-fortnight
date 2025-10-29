@@ -35,16 +35,27 @@ Races.SUMMONABLE_STAGES = {
 
 -- ===== Utility Functions =====
 local function clamp(x, a, b) return math.max(a, math.min(b, x)) end
-local function normStat(v, minV, maxV) 
-	if maxV == minV then return 0 end
-	return clamp((v - minV) / (maxV - minV), 0, 1) 
+local function normStat(v, minV, maxV)
+        if maxV == minV then return 0 end
+        return clamp((v - minV) / (maxV - minV), 0, 1)
 end
+
+local STAT_ALIASES = {
+        Hp = {"Hp", "HP"},
+        Mp = {"Mp", "MP"},
+        Strength = {"Strength", "STR"},
+        Defense = {"Defense", "DEF"},
+        Skill = {"Skill", "SKL"},
+        Speed = {"Speed", "SPD"},
+        Intelligence = {"Intelligence", "INT"},
+        Luck = {"Luck", "LCK"},
+}
 
 -- ===== Race Definitions =====
 local DEFINITIONS = {
         -- ===== UNIVERSAL PRE-EVOLUTION =====
-        GenesisLarva = {
-                displayName = "Genesis Larva",
+        Blank = {
+                displayName = "Blank",
                 stage = "Proto",
                 baseRaceFamily = "Proto",
                 isSummonable = true,
@@ -702,13 +713,36 @@ function Races:ValidateEvolution(evolution, currentRace, targetRace)
 end
 
 function Races:GetStatCapForStage(stage, statType)
-	local stageCap = self.StageCaps[stage] or 300
+        local stageCap = self.StageCaps[stage] or 300
 
-	if statType == "Hp" then
-		return stageCap * 2
-	else
-		return stageCap * 0.6
-	end
+        if statType == "Hp" or statType == "Mp" then
+                return stageCap * 2
+        else
+                return stageCap * 0.6
+        end
+end
+
+function Races:ClampStatsByStage(stats, stage)
+        if typeof(stats) ~= "table" then
+                return stats
+        end
+
+        stage = stage or "Fledgeling"
+
+        for canonical, aliases in pairs(STAT_ALIASES) do
+                local cap = self:GetStatCapForStage(stage, canonical)
+                if cap then
+                        for _, key in ipairs(aliases) do
+                                local value = stats[key]
+                                if typeof(value) == "number" then
+                                        local clamped = math.max(1, math.floor(math.min(value, cap)))
+                                        stats[key] = clamped
+                                end
+                        end
+                end
+        end
+
+        return stats
 end
 
 -- ===== Evolution Helper Functions =====
