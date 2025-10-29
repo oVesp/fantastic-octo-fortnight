@@ -438,11 +438,11 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 		local personalityName = monsterInstance:GetAttribute("Personality") or "Unpredictable"
 		local personalityData = PERSONALITIES_MODULE.Personalities[personalityName] or PERSONALITIES_MODULE.Personalities.Unpredictable
 
-		local combatantProfile = {
-			id = participantId,
-			instance = monsterInstance,
-			team = team,
-			stats = { Hp = maxHp },
+                local combatantProfile = {
+                        id = participantId,
+                        instance = monsterInstance,
+                        team = team,
+                        stats = { Hp = maxHp },
 			currentHp = humanoid and humanoid.Health or maxHp,
 			currentMp = currentMp,
 			moves = getMonsterMoves(monsterInstance),
@@ -452,12 +452,13 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 			combatState = "DECIDING", -- Use string literal
 			combatStateKey = nil, -- To store the key from _G.STATES
 			stateStartTime = os.clock(),
-			currentPlan = nil,
-			behaviorProfile = {
-				aggression = personalityData.movementStyle.aggressionMultiplier or 1.0,
-				patience = 1.0,
-				caution = 0.5,
-				adaptability = 0.7,
+                        currentPlan = nil,
+                        maxTargetLevel = 0,
+                        behaviorProfile = {
+                                aggression = personalityData.movementStyle.aggressionMultiplier or 1.0,
+                                patience = 1.0,
+                                caution = 0.5,
+                                adaptability = 0.7,
 			}
 		}
 
@@ -1340,9 +1341,9 @@ end
 
 -- Move Execution
 function CombatManager.ExecuteTacticalMove(participant, move, combatData, explicitTarget, explicitTargetParticipant)
-	local attacker = participant.instance
-	local targetParticipant = explicitTargetParticipant or participant.target
-	local target = explicitTarget or (targetParticipant and targetParticipant.instance)
+        local attacker = participant.instance
+        local targetParticipant = explicitTargetParticipant or participant.target
+        local target = explicitTarget or (targetParticipant and targetParticipant.instance)
 
 	if not attacker or not target or not attacker.Parent or not target.Parent then
 		setTacticalState(participant, "DECIDING")
@@ -1392,19 +1393,34 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 		task.wait(move.castTime)
 	end
 
-	-- Check if still valid after cast
-	if not attacker or not target or not attacker.Parent or not target.Parent then
-		_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
-		EnhancedMovement.LockMovement(attacker, false)
-		setTacticalState(participant, "DECIDING")
-		return
-	end
+        -- Check if still valid after cast
+        if not attacker or not target or not attacker.Parent or not target.Parent then
+                _G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
+                EnhancedMovement.LockMovement(attacker, false)
+                setTacticalState(participant, "DECIDING")
+                return
+        end
 
-	-- Resolve the attack
-	local attStats = getEffectiveStats(attacker)
-	local tgtStats = getEffectiveStats(target)
-	local tags = move.tags or {}
-	local isUtilityMove = (move.power or 0) <= 0
+        local targetLevelValue = target:GetAttribute("Level")
+        local isEnemyTarget = true
+        if targetParticipant and targetParticipant.team == participant.team then
+                isEnemyTarget = false
+        elseif target == attacker then
+                isEnemyTarget = false
+        end
+
+        if isEnemyTarget and typeof(targetLevelValue) == "number" then
+                local currentMax = participant.maxTargetLevel
+                if typeof(currentMax) ~= "number" or targetLevelValue > currentMax then
+                        participant.maxTargetLevel = targetLevelValue
+                end
+        end
+
+        -- Resolve the attack
+        local attStats = getEffectiveStats(attacker)
+        local tgtStats = getEffectiveStats(target)
+        local tags = move.tags or {}
+        local isUtilityMove = (move.power or 0) <= 0
 
 	if not isUtilityMove then
 		for _, tag in ipairs(tags) do
@@ -1523,114 +1539,102 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 end
 
 function CombatManager.ApplyMoveEffects(attacker, target, move)
-	if not move or not move.effects or #move.effects == 0 then
-		return
-	end
+        if not move or not move.effects or #move.effects == 0 then
+                return
+        end
 
-	local function resolveRecipient(effect)
-		local destination = effect.target
-		if destination == "attacker" or destination == "self" then
-			return attacker
-		end
-		return target
-	end
+        local function resolveRecipient(effect)
+                local destination = effect.target
+                if destination == "attacker" or destination == "self" then
+                        return attacker
+                end
+                return target
+        end
 
-	local function buildPayload(effect)
-		return {
-			name = effect.status,
-			dur = effect.duration or 0,
-			stacks = effect.stacks or 1,
-			power = effect.power,
-			dps = effect.dps,
-		}
-	end
+        local function findAuraPart(model)
+                if not model then
+                        return nil
+                end
+                return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+        end
 
-	local function applyStatus(recipient, effect)
-		if not recipient or not effect.status then
-			return
-		end
-		StatusEffects.Apply(recipient, buildPayload(effect), attacker)
-	end
+        iterateMoveEffects(move, function(effectType, entry)
+                local effect = typeof(entry) == "table" and entry or { type = effectType, status = effectType }
+                local statusName = effect.status or effectType
+                local recipient = resolveRecipient(effect)
 
-	local function findAuraPart(model)
-		if not model then
-			return nil
-		end
-		return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-	end
+                local alreadyFortified = nil
+                if effectType == "FortifyAura" and attacker then
+                        alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
+                end
 
-	iterateMoveEffects(move, function(effectType, entry)
-		local effect = typeof(entry) == "table" and entry or { type = effectType, status = effectType }
-		effect.status = effect.status or effectType
-		effect.stacks = effect.stacks or 1
+                if recipient and statusName then
+                        local payload = {
+                                name = statusName,
+                                dur = effect.duration or effect.dur or 0,
+                                stacks = effect.stacks or 1,
+                                power = effect.power,
+                                dps = effect.dps,
+                        }
+                        StatusEffects.Apply(recipient, payload, attacker)
+                end
 
-		if effectType == "FortifyAura" then
-			if attacker then
-				local alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
-				applyStatus(attacker, effect)
-				if _G.EFFECTS and _G.EFFECTS.AuraEffect then
-					local basePart = findAuraPart(attacker)
-					if basePart then
-						_G.EFFECTS.AuraEffect({
-							Name = "FortifyAura",
-							LocationParts = {basePart},
-							Color = ColorSequence.new({
-								ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
-								ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
-							}),
-							Duration = alreadyFortified and (effect.refreshDuration or effect.duration or 0) or (effect.duration or 0),
-							AuraReference = "Fortify",
-						})
-					end
-				end
-			end
-			return
-		end
+                if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
+                        return
+                end
 
-		local recipient = resolveRecipient(effect)
-		if effect.status and recipient then
-			applyStatus(recipient, effect)
-		end
+                if effectType == "FortifyAura" and attacker then
+                        local basePart = findAuraPart(attacker)
+                        if basePart then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "FortifyAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new({
+                                                ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
+                                                ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
+                                        }),
+                                        Duration = alreadyFortified and (effect.refreshDuration or effect.duration or effect.dur or 0) or (effect.duration or effect.dur or 0),
+                                        AuraReference = "Fortify",
+                                })
+                        end
+                        return
+                end
 
-		if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
-			return
-		end
-
-		if effectType == "Shield" then
-			local basePart = findAuraPart(recipient)
-			if basePart then
-				_G.EFFECTS.AuraEffect({
-					Name = "ShieldAura",
-					LocationParts = {basePart},
-					Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
-					Duration = effect.duration or 0,
-					AuraReference = "Shield",
-				})
-			end
-		elseif effectType == "BuffSelf" then
-			local basePart = findAuraPart(attacker)
-			if basePart then
-				_G.EFFECTS.AuraEffect({
-					Name = "BuffAura",
-					LocationParts = {basePart},
-					Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
-					Duration = effect.duration or 0,
-					AuraReference = "GuardUp",
-				})
-			end
-		elseif effectType == "Haste" then
-			local basePart = findAuraPart(attacker)
-			if basePart then
-				_G.EFFECTS.AuraEffect({
-					Name = "SpeedAura",
-					LocationParts = {basePart},
-					Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
-					Duration = effect.duration or 0,
-					AuraReference = "Haste",
-				})
-			end
-		end
-	end)
+                if effectType == "Shield" then
+                        local basePart = findAuraPart(recipient)
+                        if basePart then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "ShieldAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
+                                        Duration = effect.duration or effect.dur or 0,
+                                        AuraReference = "Shield",
+                                })
+                        end
+                elseif effectType == "BuffSelf" and attacker then
+                        local basePart = findAuraPart(attacker)
+                        if basePart then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "BuffAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
+                                        Duration = effect.duration or effect.dur or 0,
+                                        AuraReference = "GuardUp",
+                                })
+                        end
+                elseif effectType == "Haste" and attacker then
+                        local basePart = findAuraPart(attacker)
+                        if basePart then
+                                _G.EFFECTS.AuraEffect({
+                                        Name = "SpeedAura",
+                                        LocationParts = {basePart},
+                                        Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
+                                        Duration = effect.duration or effect.dur or 0,
+                                        AuraReference = "Haste",
+                                })
+                        end
+                end
+        end)
 end
 
 -- Target Selection
@@ -1655,23 +1659,72 @@ function CombatManager.SelectNewTarget(participant, combatData)
 end
 
 -- Combat Results
-function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
-	print("Processing combat results...")
+local function computeTargetLevelMultiplier(participant, combatData)
+        local inst = participant.instance
+        if not inst or not inst.Parent then
+                return 1
+        end
 
-	-- Debug: Print all participants status
-	for participantId, participant in pairs(combatData.participants) do
-		local alive = participant.currentHp > 0 and isAlive(participant.instance)
+        local tracked = participant.maxTargetLevel
+        if typeof(tracked) ~= "number" or tracked <= 0 then
+                tracked = nil
+        end
+
+        if not tracked then
+                for teamId, members in pairs(combatData.teams) do
+                        if teamId ~= participant.team then
+                                for _, enemy in ipairs(members) do
+                                        local enemyInst = enemy.instance
+                                        if enemyInst and enemyInst.Parent then
+                                                local enemyLevel = enemyInst:GetAttribute("Level")
+                                                if typeof(enemyLevel) == "number" and enemyLevel > 0 then
+                                                        tracked = math.max(tracked or 0, enemyLevel)
+                                                end
+                                        end
+                                end
+                        end
+                end
+        end
+
+        if not tracked then
+                return 1
+        end
+
+        local ownLevel = inst:GetAttribute("Level")
+        if typeof(ownLevel) ~= "number" or ownLevel <= 0 then
+                ownLevel = tracked
+        end
+
+        local delta = tracked - ownLevel
+        if delta == 0 then
+                return 1
+        end
+
+        local STEP = 0.1
+        if delta > 0 then
+                return math.clamp(1 + delta * STEP, 1, 2.0)
+        else
+                return math.clamp(1 / (1 + (-delta) * STEP), 0.5, 1)
+        end
+end
+
+function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
+        print("Processing combat results...")
+
+        -- Debug: Print all participants status
+        for participantId, participant in pairs(combatData.participants) do
+                local alive = participant.currentHp > 0 and isAlive(participant.instance)
 		print(string.format("[Result] %s: HP=%d, Alive=%s", 
 			participantId, participant.currentHp, tostring(alive)))
 	end
 
 	-- === RESULTS: wins + stat increases via _G.FUNCTIONS.distributePoints ===
-	local function applyResults(participant, didWin, multiplier)
-		local m = participant.instance
-		if not (m and m.Parent) then return end
-		local ownerId = m:GetAttribute("OwnerId")
+        local function applyResults(participant, didWin, multiplier)
+                local m = participant.instance
+                if not (m and m.Parent) then return end
+                local ownerId = m:GetAttribute("OwnerId")
 
-		-- Wins/Losses as attributes (visible & simple)
+                -- Wins/Losses as attributes (visible & simple)
 		if didWin then
 			m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
 			if ownerId then
@@ -1682,14 +1735,16 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 		end
 
 		-- Stat bumps: 2 points for win, 1 for loss
-		local points = didWin and 5 or 10
-		local keys = {"Hp","Mp","Strength","Defense","Skill","Speed","Intelligence"} -- attrs you actually set
+                local basePoints = didWin and 5 or 10
+                local scaledPoints = basePoints * (multiplier or 1)
+                local points = math.max(1, math.floor(scaledPoints + 0.5))
+                local keys = {"Hp","Mp","Strength","Defense","Skill","Speed","Intelligence"} -- attrs you actually set
 
-		local dist
-		if _G.FUNCTIONS and _G.FUNCTIONS.distributePoints then
-			local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
-			dist = ok and res or nil
-		end
+                local dist
+                if _G.FUNCTIONS and _G.FUNCTIONS.distributePoints then
+                        local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
+                        dist = ok and res or nil
+                end
 		if not dist then
 			-- simple fallback: random +1s
 			dist = {}
@@ -1699,24 +1754,23 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 			end
 		end
 		local StatUpdate = game.ReplicatedStorage.Remotes.StatUpdate
-		if ownerId then
-			local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
+                if ownerId then
+                        local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
 
-			StatUpdate:FireClient(ownerPlr, dist, ownerId)
-			if didWin then
-				_G.EFFECTS.PlaySound("Success", {Where = ownerPlr.Character})
+                        StatUpdate:FireClient(ownerPlr, dist, ownerId)
+                        if didWin then
+                                _G.EFFECTS.PlaySound("Success", {Where = ownerPlr.Character})
 			else
 				_G.EFFECTS.PlaySound("Fail", {Where = ownerPlr.Character})
 			end
 		end
 		-- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
-		for k, add in pairs(dist) do
-			
-			if add and add ~= 0 then
-				if k == "Hp" then
-					local hum = m:FindFirstChildOfClass("Humanoid")
-					if hum then
-						hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
+                for k, add in pairs(dist) do
+                        if add and add ~= 0 then
+                                if k == "Hp" then
+                                        local hum = m:FindFirstChildOfClass("Humanoid")
+                                        if hum then
+                                                hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
 						-- don't fully heal; but keep current within new max
 						hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
 					end
@@ -1726,15 +1780,17 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 					m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
 				else
 					m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
-				end
-			end
-		end
+                                end
+                        end
+                end
 
-		-- Optionally notify your data layer
-		if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
-			local pid = tonumber(ownerId or 0)
-			if pid and pid > 0 then
-				local entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
+                m:SetAttribute("LastRewardMultiplier", multiplier or 1)
+
+                -- Optionally notify your data layer
+                if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
+                        local pid = tonumber(ownerId or 0)
+                        if pid and pid > 0 then
+                                local entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
 				if entry and entry.Data then
 					entry.Data.Wins = m:GetAttribute("Wins") or entry.Data.Wins or 0
 
@@ -1748,12 +1804,13 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 	end
 
 	-- Apply results to everyone
-	for _, participant in pairs(combatData.participants) do
-		if participant.instance and participant.instance.Parent then
-			local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
-			applyResults(participant, didWin --[[multiplier is level of target]])
-		end
-	end
+        for _, participant in pairs(combatData.participants) do
+                if participant.instance and participant.instance.Parent then
+                        local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
+                        local levelMultiplier = computeTargetLevelMultiplier(participant, combatData)
+                        applyResults(participant, didWin, levelMultiplier)
+                end
+        end
 
 	if winningTeam then
 		for _, member in ipairs(combatData.teams[winningTeam]) do
