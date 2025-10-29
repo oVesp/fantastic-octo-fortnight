@@ -133,27 +133,9 @@ function TrainingSystem:Start(player, monster, trainingName, ctx)
 			_G.MOVE_LEARNING.OnTrainingComplete(player, trainingName, true)
 		end
 
-		if _G.EVOLUTION and _G.EVOLUTION.CheckEvolutionTrigger then
-			local owner = monster:GetAttribute("OwnerId")
-			if owner then
-				local ownerPlr = game.Players:GetPlayerByUserId(owner)
-				if ownerPlr then
-					task.delay(1, function()
-						local ok, evoResult = pcall(function()
-							return _G.EVOLUTION.CheckEvolutionTrigger(ownerPlr, "training", {
-								trainingType = trainingName,
-							})
-						end)
-						if not ok then
-							warn("[TrainingSystem] Evolution check failed:", evoResult)
-						end
-					end)
-				end
-			end
-		end
-	else
-		--_G.EFFECTS.PlaySound("Fail", {Where = targetPlayer.HumanoidRootPart})
-	end
+        else
+                --_G.EFFECTS.PlaySound("Fail", {Where = targetPlayer.HumanoidRootPart})
+        end
 
 	return result, gains
 end

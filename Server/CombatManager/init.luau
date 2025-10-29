@@ -1875,31 +1875,9 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 		end
 	end
 
-	-- === Check for evolution after combat ===
-	if _G.EVOLUTION and _G.EVOLUTION.CheckEvolutionTrigger then
-		for _, participant in pairs(combatData.participants) do
-			if participant.instance and participant.instance.Parent and participant.currentHp > 0 then
-				local ownerId = participant.instance:GetAttribute("OwnerId")
-				if ownerId then
-					local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
-					if ownerPlr then
-						-- Check evolution after combat (with 2 second delay to let player see results)
-						task.delay(2, function()
-							local ok, result = pcall(function()
-								return _G.EVOLUTION.CheckEvolutionTrigger(ownerPlr, "combat")
-							end)
-							if not ok then
-								warn("[CombatManager] Evolution check failed:", result)
-							end
-						end)
-					end
-				end
-			end
-		end
-	end
-	for participantId, participant in pairs(combatData.participants) do
-		if participant.currentHp > 0 then
-			local ownerId = participant.instance:GetAttribute("OwnerId")
+        for participantId, participant in pairs(combatData.participants) do
+                if participant.currentHp > 0 then
+                        local ownerId = participant.instance:GetAttribute("OwnerId")
 			if ownerId then
 				local player = game.Players:GetPlayerByUserId(ownerId)
 				if player and _G.MOVE_LEARNING then
