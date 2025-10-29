@@ -1812,17 +1812,19 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
                 end
         end
 
-	if winningTeam then
-		for _, member in ipairs(combatData.teams[winningTeam]) do
-			local ownerId = member.instance:GetAttribute("OwnerId")
-			if ownerId and _G.DATA then
-				local data = _G.DATA:Get(ownerId).Monster
-				data.Wins = (data.Wins or 0) + 1
-				-- optional: add progress from the battle, e.g. data.MoveProgress.Melee += X
-				MoveUnlocks.ResolveUnlocks(data, "combat", { damageDealt = member._damage or 0 })
-			end
-		end
-	end
+        if winningTeam then
+                for _, member in ipairs(combatData.teams[winningTeam]) do
+                        local ownerId = member.instance:GetAttribute("OwnerId")
+                        if ownerId and _G.DATA then
+                                local playerData = _G.DATA:Get(ownerId)
+                                local monsterData = playerData and playerData.Monster
+                                if monsterData then
+                                        -- Wins were already incremented in applyResults; just resolve unlocks here.
+                                        MoveUnlocks.ResolveUnlocks(monsterData, "combat", { damageDealt = member._damage or 0 })
+                                end
+                        end
+                end
+        end
 
 	-- === Your existing reset for survivors ===
 	for _, participant in pairs(combatData.participants) do
