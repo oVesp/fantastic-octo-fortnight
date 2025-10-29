@@ -5,22 +5,24 @@ local EvolutionDefs = {}
 
 -- ===== Progressive Stage Caps =====
 EvolutionDefs.StageCaps = {
-	Fledgeling = 300,   -- Total stats cap
-	Rookie = 600,
-	Champion = 1200,
-	Elder = 1800,
-	Unique = 2000
+        Proto = 120,
+        Fledgeling = 300,   -- Total stats cap
+        Rookie = 600,
+        Champion = 1200,
+        Elder = 1800,
+        Unique = 2000
 }
 
 -- ===== Stage Order =====
-EvolutionDefs.StageOrder = { "Fledgeling","Rookie","Champion","Elder","Unique" }
+EvolutionDefs.StageOrder = { "Proto","Fledgeling","Rookie","Champion","Elder","Unique" }
 
 -- ===== Race Stage Mapping =====
 EvolutionDefs.RaceStage = {
 	-- Raptor line
 	--Raptor="Fledgeling", Dino="Rookie", Beast="Champion", Dragon="Elder", Behemoth="Elder",
 	-- Construct / Core line
-	Core="Fledgeling", Golem="Rookie", Titan="Champion", Colossus="Elder", PrimordialConstruct="Unique",
+        GenesisLarva="Proto",
+        Core="Fledgeling", Golem="Rookie", Titan="Champion", Colossus="Elder", PrimordialConstruct="Unique",
 	-- Demonic line
 	Imp="Fledgeling", Devil="Rookie", Archdemon="Champion", AbyssLord="Elder",
 	-- Progenitor / Reality line
@@ -62,8 +64,7 @@ function EvolutionDefs:GetEvolutionChance(currentRace, ctx, candidate)
 
 	if totalGates == 0 then return 1.0 end -- No requirements = 100% chance
 
-	local overallProgress = progress / totalGates
-	print(overallProgress, "Progress")
+        local overallProgress = progress / totalGates
 	-- Base chance increases with progress, with forced evolution at very low progress
 	if overallProgress >= 0.9 then
 		return 0.95 -- 95% chance when nearly all requirements met
@@ -191,8 +192,9 @@ end
 
 -- ===== Moves por Raça (raça decide por padrão) =====
 EvolutionDefs.MovesByRace = {
-	-- Raptor
-	Raptor = { "Tackle", "Bite" },
+        GenesisLarva = { "BasicAttack" },
+        -- Raptor
+        Raptor = { "Tackle", "Bite" },
 	Dino = { "Crush", "Roar", "TailSwipe" },
 	Beast = { "Pounce", "SavageClaw", "Intimidate" },
 	Dragon = { "FlameBreath", "WingBuffet", "Roar" },

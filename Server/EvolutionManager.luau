@@ -181,121 +181,120 @@ end
 
 -- Decide a evolução com base em Races:GetEvolutions(race) com sistema de chance
 function EvolutionManager.TryEvolve(monsterData, trigger, opts)
-	local currentRace = monsterData and monsterData.Race
-	if not currentRace then
-		return false, "No current race on monsterData"
-	end
+        local currentRace = monsterData and monsterData.Race
+        if not currentRace then
+                return false, "No current race on monsterData"
+        end
 
-	local options = Races:GetEvolutions(currentRace)
-	if not options or #options == 0 then
-		return false, ("No evolutions available for %s"):format(tostring(currentRace))
-	end
+        local options = Races:GetEvolutions(currentRace)
+        if not options or #options == 0 then
+                return false, ("No evolutions available for %s"):format(tostring(currentRace))
+        end
 
-	local currentStage = Races:GetStage(currentRace)
-	local ctx = {
-		race = currentRace,
-		stage = currentStage,
-		stats = monsterData.Stats or {},
-		bond = monsterData.Bond or 0,
-		wins = monsterData.Wins or 0,
-		sessionTime = monsterData.SessionTime or 0,
-		careMistakes = monsterData.CareMistakes or 0,
-		personality = monsterData.Personality,
-		baseRaceFamily = monsterData.BaseRaceFamily,
-		cameFrom = currentRace,
-		history = monsterData.History or {},
-		trigger = trigger or "manual",
-		evoItem = opts and opts.evoItem or nil,
-	}
+        local currentStage = Races:GetStage(currentRace)
+        local ctx = {
+                race = currentRace,
+                stage = currentStage,
+                stats = monsterData.Stats or {},
+                bond = monsterData.Bond or 0,
+                wins = monsterData.Wins or 0,
+                sessionTime = monsterData.SessionTime or 0,
+                careMistakes = monsterData.CareMistakes or 0,
+                personality = monsterData.Personality,
+                baseRaceFamily = monsterData.BaseRaceFamily,
+                cameFrom = currentRace,
+                history = monsterData.History or {},
+                trigger = trigger or "manual",
+                evoItem = opts and opts.evoItem or nil,
+        }
 
-	-- Filter eligible evolutions based on gates
-	local eligible = {}
-	for _, evo in ipairs(options) do
-		if meetsGates(ctx, evo.gates) then
-			-- Calculate evolution chance
-			local chance = EvoDef:GetEvolutionChance(currentRace, ctx, evo)
+        local weightedOptions = {}
+        local totalWeight = 0
 
-			-- Trigger-based multipliers
-			if trigger == "combat" then
-				chance = chance * 1.2 -- 20% bonus for combat trigger
-			elseif trigger == "training" then
-				chance = chance * 1.1 -- 10% bonus for training trigger
-			elseif trigger == "item" and ctx.evoItem then
-				chance = 1.0 -- Evolution items guarantee evolution if requirements met
-			end
+        for _, evo in ipairs(options) do
+                if meetsGates(ctx, evo.gates) then
+                        local baseChance = EvoDef:GetEvolutionChance(currentRace, ctx, evo)
+                        local weightMultiplier = 1
 
-			-- Bonus based on wins
-			if ctx.wins >= 20 then
-				chance = chance * 1.3
-			elseif ctx.wins >= 10 then
-				chance = chance * 1.15
-			end
+                        if typeof(evo.weights) == "function" then
+                                local ok, value = pcall(evo.weights, ctx)
+                                if ok and typeof(value) == "number" then
+                                        weightMultiplier = math.max(0, value)
+                                end
+                        elseif typeof(evo.weights) == "number" then
+                                weightMultiplier = math.max(0, evo.weights)
+                        end
 
-			-- Bonus based on bond
-			if ctx.bond >= 70 then
-				chance = chance * 1.2
-			elseif ctx.bond >= 40 then
-				chance = chance * 1.1
-			end
+                        local combinedWeight = math.max(0, baseChance * weightMultiplier)
 
-			-- Cap chance at 0.99 to keep some RNG
-			chance = math.min(0.99, chance)
+                        if combinedWeight > 0 then
+                                totalWeight += combinedWeight
+                                table.insert(weightedOptions, {
+                                        target = evo.target,
+                                        weight = combinedWeight,
+                                        baseChance = baseChance,
+                                        weightMultiplier = weightMultiplier,
+                                        gates = evo.gates,
+                                })
+                        end
+                end
+        end
 
-			table.insert(eligible, {
-				target = evo.target,
-				chance = chance,
-				gates = evo.gates,
-				weights = evo.weights,
-			})
-			print(chance, eligible)
-		end
-	end
+        if totalWeight <= 0 then
+                return false, "Evolution requirements not met"
+        end
 
-	if #eligible == 0 then
-		return false, "Evolution requirements not met"
-	end
-	print(eligible)
-	-- Sort by chance (highest first)
-	table.sort(eligible, function(a, b)
-		return (a.chance or 0) > (b.chance or 0)
-	end)
+        local roll = math.random() * totalWeight
+        local cumulative = 0
+        local chosen
 
-	-- Roll for evolution with the best candidate
-	local best = eligible[1]
-	local roll = math.random()
-	print(best.chance, best.target)
-	if roll <= best.chance then
-		return true, best.target, best.chance
-	else
-		return false, string.format("Evolution roll failed (%.1f%% chance, rolled %.1f%%)", 
-			best.chance * 100, roll * 100)
-	end
+        for _, option in ipairs(weightedOptions) do
+                cumulative += option.weight
+                if roll <= cumulative then
+                        chosen = option
+                        break
+                end
+        end
+
+        if not chosen then
+                chosen = weightedOptions[#weightedOptions]
+        end
+
+        local finalChance = chosen.weight / totalWeight
+
+        return true, chosen.target, finalChance, {
+                selected = chosen,
+                totalWeight = totalWeight,
+        }
 end
 
 -- Inicia o processo de evolução (chamado via Remote ou server)
--- trigger: "manual", "combat", "training", or "item" (optional, defaults to "manual")
+-- trigger: optional context string (defaults to "manual")
 -- opts: optional table { evoItem = itemId }
 function EvolutionManager.StartEvolution(player: Player, playerData, trigger, opts)
-	trigger = trigger or "manual"
-	opts = opts or {}
-	if not player or not player.UserId then
-		return false, "Invalid player"
-	end
+        trigger = trigger or "manual"
+        opts = opts or {}
+        if not player or not player.UserId then
+                return false, "Invalid player"
+        end
 
-	if not playerData then
-		warn("[EvolutionManager] No playerData for", player)
-		return false, "No player data"
-	end
+        if not playerData then
+                warn("[EvolutionManager] No playerData for", player)
+                return false, "No player data"
+        end
 
-	-- Decide evolução
-	local ok, targetOrReason, chance = EvolutionManager.TryEvolve(playerData, trigger, opts)
-	if not ok then
-		return false, targetOrReason -- <- AGORA RETORNA MOTIVO
-	end
+        local monsterData = playerData.Monster or playerData
+        if not monsterData then
+                return false, "No monster data"
+        end
 
-	-- Log evolution attempt
-	print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)", 
-		player.Name, trigger, (chance or 0) * 100))
+        local ok, targetOrReason, chance = EvolutionManager.TryEvolve(monsterData, trigger, opts)
+        if not ok then
+                return false, targetOrReason
+        end
+
+        print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)",
+                player.Name, trigger, (chance or 0) * 100))
 
 	-- Pega posição atual p/ o FX e reposicionamento
 	local currentModel = EvolutionManager.FindPlayerMonster(player)
@@ -496,11 +495,12 @@ function EvolutionManager.CompleteEvolution(player: Player, newRaceName: string,
 		return
 	end
 
-	local oldRace = playerData.Race
+        local oldRace = playerData.Race
 
-	-- Atualiza playerData
-	playerData.Race = newRaceName
-	playerData.Stage = Races:GetStage(newRaceName)
+        -- Atualiza playerData
+        playerData.Race = newRaceName
+        playerData.Stage = Races:GetStage(newRaceName)
+        playerData.BaseRaceFamily = Races:GetBaseRaceFamily(newRaceName) or playerData.BaseRaceFamily
 	-- snapshot para cálculo (pairs pode falhar direto no proxy)
 
 	applyEvolutionGainsInPlace(playerData.Stats, playerData.Stage)
@@ -587,31 +587,6 @@ end
 
 -- Check for evolution after a trigger event (combat/training)
 -- Automatically attempts evolution if requirements are close to being met
-function EvolutionManager.CheckEvolutionTrigger(player: Player, trigger: string, opts)
-	if not player or not player.UserId then return false end
-
-	local playerData = _G.DATA and _G.DATA:Get(player.UserId).Monster
-	if not playerData then return false end
-
-	-- Check if evolution is possible
-	local currentRace = playerData.Race
-	local options = Races:GetEvolutions(currentRace)
-	if not options or #options == 0 then return false end
-
-	-- Try to evolve with the trigger
-	local ok, result = EvolutionManager.StartEvolution(player, playerData, trigger, opts)
-	if ok then
-		print(string.format("[EvolutionManager] Auto-evolution successful for %s after %s", 
-			player.Name, trigger))
-		return true, result
-	else
-		-- Log why evolution didn't happen (helpful for debugging)
-		print(string.format("[EvolutionManager] Evolution check for %s after %s: %s", 
-			player.Name, trigger, tostring(result)))
-		return false, result
-	end
-end
-
 -- ===== Inicialização e binding de Remotes =====
 
 function EvolutionManager.Init()

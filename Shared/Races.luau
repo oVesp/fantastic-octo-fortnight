@@ -7,27 +7,30 @@ Races.__index = Races
 
 -- ===== Progressive Stage Caps =====
 Races.StageCaps = {
-	Fledgeling = 300,   -- Total stats cap
-	Rookie = 800,
-	Champion = 1200,
-	Elder = 1800,
-	Unique = 2000
+        Proto = 120,        -- Pre-evolution stage
+        Fledgeling = 300,   -- Total stats cap
+        Rookie = 800,
+        Champion = 1200,
+        Elder = 1800,
+        Unique = 2000
 }
 
 -- ===== Stage Order =====
 local STAGE = {
-	Fledgeling = 1,
-	Rookie = 2,
-	Champion = 3,
-	Elder = 4,
-	Unique = 5,
+        Proto = 0,
+        Fledgeling = 1,
+        Rookie = 2,
+        Champion = 3,
+        Elder = 4,
+        Unique = 5,
 }
 
 Races.STAGE = STAGE
 
 -- ===== Summonable Stages =====
 Races.SUMMONABLE_STAGES = {
-	Fledgeling = true,
+        Proto = true,
+        Fledgeling = true,
 }
 
 -- ===== Utility Functions =====
@@ -39,9 +42,88 @@ end
 
 -- ===== Race Definitions =====
 local DEFINITIONS = {
-	-- ===== PROGENITOR FAMILY =====
-	RealitySeed = {
-		displayName = "Reality Seed",
+        -- ===== UNIVERSAL PRE-EVOLUTION =====
+        GenesisLarva = {
+                displayName = "Genesis Larva",
+                stage = "Proto",
+                baseRaceFamily = "Proto",
+                isSummonable = true,
+                evolutions = {
+                        {
+                                target = "RealitySeed",
+                                requiredStage = "Fledgeling",
+                                weights = function(ctx)
+                                        local stats = ctx.stats or {}
+                                        local stageCap = Races.StageCaps.Proto or 120
+                                        local function stat(...)
+                                                for _, key in ipairs({...}) do
+                                                        local v = stats[key]
+                                                        if typeof(v) == "number" then
+                                                                return v
+                                                        end
+                                                end
+                                                return 0
+                                        end
+
+                                        local INT = normStat(stat("Intelligence", "INT"), 0, stageCap * 0.9)
+                                        local SPD = normStat(stat("Speed", "SPD"), 0, stageCap * 0.9)
+                                        local bond = math.clamp((ctx.bond or 0) / 100, 0, 1)
+                                        local alignment = 0.05 + 0.35 * INT + 0.35 * SPD + 0.1 * bond
+                                        return math.clamp(alignment * 0.6, 0, 0.6)
+                                end,
+                        },
+                        {
+                                target = "Core",
+                                requiredStage = "Fledgeling",
+                                weights = function(ctx)
+                                        local stats = ctx.stats or {}
+                                        local stageCap = Races.StageCaps.Proto or 120
+                                        local function stat(...)
+                                                for _, key in ipairs({...}) do
+                                                        local v = stats[key]
+                                                        if typeof(v) == "number" then
+                                                                return v
+                                                        end
+                                                end
+                                                return 0
+                                        end
+
+                                        local STR = normStat(stat("Strength", "STR"), 0, stageCap * 0.5)
+                                        local DEF = normStat(stat("Defense", "DEF"), 0, stageCap * 0.5)
+                                        local HP = normStat(stat("Hp", "HP"), 0, stageCap)
+                                        local alignment = 0.25 + 0.45 * STR + 0.35 * DEF + 0.1 * HP
+                                        return math.clamp(alignment, 0, 1.2)
+                                end,
+                        },
+                        {
+                                target = "Hopling",
+                                requiredStage = "Fledgeling",
+                                weights = function(ctx)
+                                        local stats = ctx.stats or {}
+                                        local stageCap = Races.StageCaps.Proto or 120
+                                        local function stat(...)
+                                                for _, key in ipairs({...}) do
+                                                        local v = stats[key]
+                                                        if typeof(v) == "number" then
+                                                                return v
+                                                        end
+                                                end
+                                                return 0
+                                        end
+
+                                        local SPD = normStat(stat("Speed", "SPD"), 0, stageCap * 0.6)
+                                        local SKL = normStat(stat("Skill", "SKL"), 0, stageCap * 0.6)
+                                        local LCK = normStat(stat("Luck", "LCK"), 0, stageCap * 0.6)
+                                        local alignment = 0.3 + 0.4 * SPD + 0.35 * SKL + 0.1 * LCK
+                                        return math.clamp(alignment, 0, 1.3)
+                                end,
+                        },
+                }
+        },
+
+        -- ===== PROGENITOR FAMILY =====
+        RealitySeed = {
+                displayName = "Reality Seed",
 		stage = "Fledgeling",
 		baseRaceFamily = "Progenitor",
 		isSummonable = true,
