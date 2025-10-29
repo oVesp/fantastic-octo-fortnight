@@ -110,10 +110,74 @@ function module.GetPlayerMonster(player)
 	return nil
 end
 
-UIRemote.OnServerEvent:Connect(function(plr, ui)
-	local ui = plr:WaitForChild("PlayerGui"):WaitForChild("MonsterSheetUI"):WaitForChild("MonsterSheet")
-	ui.Enabled = not ui.Enabled
-end)
+if UIRemote then
+        local function toggleMonsterSheet(playerGui: PlayerGui?)
+                if not playerGui then
+                        return
+                end
+
+                local sheetContainer = playerGui:FindFirstChild("MonsterSheetUI")
+                if not sheetContainer then
+                        return
+                end
+
+                local sheet = sheetContainer:FindFirstChild("MonsterSheet")
+                if not sheet then
+                        return
+                end
+
+                if sheet:IsA("ScreenGui") then
+                        sheet.Enabled = not sheet.Enabled
+                elseif sheet:IsA("GuiObject") then
+                        sheet.Visible = not sheet.Visible
+                end
+        end
+
+        local function toggleByName(player: Player, uiName: string?)
+                local playerGui = player:FindFirstChildWhichIsA("PlayerGui")
+                if not playerGui then
+                        return
+                end
+
+                if not uiName or uiName == "" or uiName == "MonsterSheet" or uiName == "MonsterSheetUI" then
+                        toggleMonsterSheet(playerGui)
+                        return
+                end
+
+                local target = playerGui:FindFirstChild(uiName)
+                if not target then
+                        local replicated = ReplicatedStorage:FindFirstChild(uiName)
+                        if replicated and replicated:IsA("ScreenGui") then
+                                target = replicated:Clone()
+                                target.Parent = playerGui
+                        end
+                end
+
+                if not target then
+                        return
+                end
+
+                if target:IsA("ScreenGui") then
+                        target.Enabled = not target.Enabled
+                elseif target:IsA("GuiObject") then
+                        target.Visible = not target.Visible
+                end
+        end
+
+        UIRemote.OnServerEvent:Connect(function(player: Player, uiName)
+                if not player or not player:IsA("Player") then
+                        return
+                end
+
+                if typeof(uiName) ~= "string" then
+                        uiName = nil
+                end
+
+                toggleByName(player, uiName)
+        end)
+else
+        warn("[Shared] UIRemote not found; UI toggle requests disabled.")
+end
 -- BuildMonster: wraps _G.MONSTERGENERATOR.BuildMonster safely and tracks monster for player or server
 -- data: data table for monster generator
 -- playerId: numeric UserId or nil for server monster
@@ -246,39 +310,45 @@ end
 
 -- EvolutionRequest: start evolution process for player's current monster (server-side)
 EvolutionRequest.OnServerEvent:Connect(function(player)
-	if not player then return end
-	if not (_G and _G.DATA and type(_G.DATA.Get) == "function") then
-		warn("[Shared] EvolutionRequest: _G.DATA not available")
-		return
-	end
+        if not player then return end
+        if not (_G and _G.DATA and type(_G.DATA.Get) == "function") then
+                warn("[Shared] EvolutionRequest: _G.DATA not available")
+                return
+        end
 
-	local playerData = _G.DATA:Get(player.UserId)
-	if not playerData then
-		warn(("[Shared] EvolutionRequest: no player data for %s"):format(player.Name))
-		return
-	end
+        local playerData = _G.DATA:Get(player.UserId)
+        if not playerData then
+                warn(("[Shared] EvolutionRequest: no player data for %s"):format(player.Name))
+                return
+        end
 
-	if not (_G and _G.EVOLUTION and type(_G.EVOLUTION.StartEvolution) == "function") then
-		warn("[Shared] EvolutionRequest: EVOLUTION module not available")
-		return
-	end
+        if not (_G and _G.EVOLUTION and type(_G.EVOLUTION.StartEvolution) == "function") then
+                warn("[Shared] EvolutionRequest: EVOLUTION module not available")
+                return
+        end
 
-	local ok, res = pcall(function()
-		return _G.EVOLUTION.StartEvolution(player, playerData)
-	end)
+        local ok, success, resultOrReason = pcall(function()
+                return _G.EVOLUTION.StartEvolution(player, playerData)
+        end)
 
-	if ok and res then
-		print(("Evolution started for %s (%s)"):format(player.Name, tostring(playerData.Race or "unknown")))
-		-- Optionally notify client via EvolutionEffect/EvolutionComplete remotes
-		if EvolutionEffect then
-			EvolutionEffect:FireClient(player, { event = "start" })
-		end
-	else
-		warn(("Evolution failed for %s: %s"):format(player.Name, tostring(res)))
-		if EvolutionComplete then
-			EvolutionComplete:FireClient(player, { success = false, reason = tostring(res) })
-		end
-	end
+        if not ok then
+                warn(("Evolution failed for %s: %s"):format(player.Name, tostring(success)))
+                if EvolutionComplete then
+                        EvolutionComplete:FireClient(player, { success = false, reason = tostring(success) })
+                end
+                return
+        end
+
+        if success then
+                print(("Evolution started for %s (%s)"):format(player.Name, tostring(playerData.Race or "unknown")))
+        else
+                local reason = tostring(resultOrReason or "unknown reason")
+                local log = reason == "Evolution chance failed" and print or warn
+                log(("Evolution failed for %s: %s"):format(player.Name, reason))
+                if EvolutionComplete then
+                        EvolutionComplete:FireClient(player, { success = false, reason = reason })
+                end
+        end
 end)
 
 

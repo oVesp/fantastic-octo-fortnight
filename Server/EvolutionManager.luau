@@ -37,6 +37,7 @@ local MoveUnlocks = require(RS.Modules.MoveUnlocks)
 -- Config
 local EFFECT_DURATION = 2.0 -- segundos antes de aplicar a evolução (tempo do VFX)
 local MINIMUM_GATED_WEIGHT = 0.01 -- Peso mínimo para evoluções com gates não cumpridos
+local randomGenerator = Random.new()
 
 -- Multiplicadores por estágio (ajuste livre)
 -- Multiplicadores por estágio
@@ -313,13 +314,45 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
                 return false, "Evolution requirements not met"
         end
 
-        local roll = math.random() * totalWeight
+        print(string.format("[EvolutionManager] Evolution roll for %s (%s)", tostring(currentRace), tostring(currentStage)))
+        print(string.format("[EvolutionManager]  total weight: %.4f", totalWeight))
+        local successChance = math.clamp(totalWeight, 0, 1)
+        print(string.format("[EvolutionManager]  success chance: %.2f%%", successChance * 100))
+        for _, option in ipairs(weightedOptions) do
+                local absoluteChance = math.clamp(option.weight, 0, 1) * 100
+                local sharePct = (totalWeight > 0) and ((option.weight / totalWeight) * 100) or 0
+                local gateStatus = option.gatesMet and "met" or "unmet"
+                if option.fallbackApplied then
+                        gateStatus = gateStatus .. ", minimum chance"
+                end
+                print(string.format("[EvolutionManager]   -> %s : %.2f%% (base %.2f%% x %.3f) [gates: %s | share %.2f%%]",
+                        tostring(option.target), absoluteChance, (option.baseChance or 0) * 100, option.weightMultiplier or 1, gateStatus, sharePct))
+                if not option.gatesMet and option.gateIssues and #option.gateIssues > 0 then
+                        print(string.format("[EvolutionManager]      unmet -> %s", table.concat(option.gateIssues, "; ")))
+                end
+        end
+        for _, line in ipairs(debugNotes) do
+                print("[EvolutionManager]   " .. line)
+        end
+        local roll = randomGenerator:NextNumber(0, 1)
+        print(string.format("[EvolutionManager]  roll value: %.4f (needs ≤ %.4f)", roll, successChance))
+
+        if roll > successChance then
+                print("[EvolutionManager]  result: fail (chance not met)")
+                return false, "Evolution chance failed"
+        end
+
+        local selectionRoll = 0
+        if successChance > 0 and totalWeight > 0 then
+                selectionRoll = math.min(totalWeight, (roll / successChance) * totalWeight)
+        end
+
         local cumulative = 0
         local chosen
 
         for _, option in ipairs(weightedOptions) do
                 cumulative += option.weight
-                if roll <= cumulative then
+                if selectionRoll <= cumulative then
                         chosen = option
                         break
                 end
@@ -329,31 +362,16 @@ function EvolutionManager.TryEvolve(monsterData, trigger, opts)
                 chosen = weightedOptions[#weightedOptions]
         end
 
-        local finalChance = chosen.weight / totalWeight
+        local finalChance = math.clamp(chosen.weight, 0, 1)
 
-        print(string.format("[EvolutionManager] Evolution roll for %s (%s)", tostring(currentRace), tostring(currentStage)))
-        print(string.format("[EvolutionManager]  total weight: %.4f", totalWeight))
-        for _, option in ipairs(weightedOptions) do
-                local chancePct = (option.weight / totalWeight) * 100
-                local gateStatus = option.gatesMet and "met" or "unmet"
-                if option.fallbackApplied then
-                        gateStatus = gateStatus .. ", minimum chance"
-                end
-                print(string.format("[EvolutionManager]   -> %s : %.2f%% (base %.2f%% x %.3f) [gates: %s]",
-                        tostring(option.target), chancePct, (option.baseChance or 0) * 100, option.weightMultiplier or 1, gateStatus))
-                if not option.gatesMet and option.gateIssues and #option.gateIssues > 0 then
-                        print(string.format("[EvolutionManager]      unmet -> %s", table.concat(option.gateIssues, "; ")))
-                end
-        end
-        for _, line in ipairs(debugNotes) do
-                print("[EvolutionManager]   " .. line)
-        end
-        print(string.format("[EvolutionManager]  roll value: %.4f / %.4f", roll, totalWeight))
-        print(string.format("[EvolutionManager]  selected: %s (%.2f%%)", tostring(chosen.target), finalChance * 100))
+        print(string.format("[EvolutionManager]  selected: %s (%.2f%% absolute | %.2f%% of successes)",
+                tostring(chosen.target), finalChance * 100, (totalWeight > 0 and (chosen.weight / totalWeight) * 100 or 0)))
 
-        return true, chosen.target, finalChance, {
+        return true, chosen.target, successChance, {
                 selected = chosen,
                 totalWeight = totalWeight,
+                roll = roll,
+                successChance = successChance,
         }
 end
 
@@ -392,14 +410,16 @@ function EvolutionManager.StartEvolution(player: Player, playerData, trigger, op
         print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)",
                 player.Name, trigger, (chance or 0) * 100))
 
-	-- Pega posição atual p/ o FX e reposicionamento
-	local currentModel = EvolutionManager.FindPlayerMonster(player)
-	local pivotCFrame = currentModel and currentModel:GetPivot()
-		or (player.Character and player.Character:GetPivot())
-		or CFrame.new()
+        -- Pega posição atual p/ o FX e reposicionamento
+        local currentModel = EvolutionManager.FindPlayerMonster(player)
+        local pivotCFrame = currentModel and currentModel:GetPivot()
+                or (player.Character and player.Character:GetPivot())
+                or CFrame.new()
 
-	-- Dispara FX no cliente
-	EvolutionEffect:FireClient(player, pivotCFrame.Position, targetOrReason)
+        local targetStage = Races:GetStage(targetOrReason) or "Proto"
+
+        -- Dispara FX no cliente
+        EvolutionEffect:FireClient(player, pivotCFrame.Position, targetOrReason, targetStage)
 
 	-- Agenda a aplicação real (continua assíncrono)
 	task.delay(EFFECT_DURATION, function()
