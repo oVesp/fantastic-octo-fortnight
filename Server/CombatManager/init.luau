@@ -19,6 +19,7 @@ local CombatMath = require(script.CombatMath)
 local StatusEffects = require(script.StatusEffects)
 local EnhancedMovement = require(script.EnhancedMovement)
 local MoveUnlocks = require(game.ReplicatedStorage.Modules.MoveUnlocks)
+local Leveling = require(RS.Modules:WaitForChild("Leveling"))
 
 local SE_TICK_ACC = 0
 local function _applyDotDamage(target, amount, source, tag)
@@ -1708,6 +1709,108 @@ local function computeTargetLevelMultiplier(participant, combatData)
         end
 end
 
+local XP_REWARD_FRACTION = 0.02
+local XP_REWARD_LOSS_FRACTION = 0.25
+
+local function resolveOwnedMonsterData(ownerId)
+        local ownerKey = tonumber(ownerId)
+        if not ownerKey then
+                return nil, nil
+        end
+
+        local monsterData
+        local entry
+
+        if _G.MONSTERGENERATOR and typeof(_G.MONSTERGENERATOR.GetPlayerMonsterData) == "function" then
+                entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(ownerKey)
+                if entry and type(entry.Data) == "table" then
+                        monsterData = entry.Data
+                end
+        end
+
+        if not monsterData and _G.DATA and typeof(_G.DATA.Get) == "function" then
+                local ok, playerStore = pcall(function()
+                        return _G.DATA:Get(ownerKey)
+                end)
+                if ok and type(playerStore) == "table" and type(playerStore.Monster) == "table" then
+                        monsterData = playerStore.Monster
+                end
+        end
+
+        return monsterData, entry
+end
+
+local function highestEnemyLevel(participant, combatData)
+        local highest = 0
+        for teamId, members in pairs(combatData.teams) do
+                if teamId ~= participant.team then
+                        for _, enemy in ipairs(members) do
+                                local enemyInst = enemy.instance
+                                if enemyInst and enemyInst.Parent then
+                                        local enemyLevel = enemyInst:GetAttribute("Level")
+                                        if typeof(enemyLevel) == "number" and enemyLevel > highest then
+                                                highest = enemyLevel
+                                        end
+                                end
+                        end
+                end
+        end
+        return highest
+end
+
+local function computeCombatExperience(participant, combatData, didWin, multiplier)
+        local baseLevel = highestEnemyLevel(participant, combatData)
+        if baseLevel <= 0 then
+                local inst = participant.instance
+                baseLevel = (inst and inst:GetAttribute("Level")) or 1
+        end
+        baseLevel = math.clamp(math.floor(baseLevel), 1, Leveling.MaxLevel)
+
+        local xpToNext = Leveling.GetExperienceToNextLevel(baseLevel)
+        if xpToNext <= 0 then
+                local probe = baseLevel - 1
+                while probe >= 1 and xpToNext <= 0 do
+                        xpToNext = Leveling.GetExperienceToNextLevel(probe)
+                        probe -= 1
+                end
+        end
+        if xpToNext <= 0 then
+                xpToNext = 1000
+        end
+
+        local reward = math.floor(xpToNext * XP_REWARD_FRACTION)
+        reward = math.max(reward, 50)
+        reward = math.floor(reward * (multiplier or 1))
+
+        if not didWin then
+                reward = math.floor(reward * XP_REWARD_LOSS_FRACTION)
+        end
+
+        return math.max(reward, 0)
+end
+
+local function applyCombatExperience(participant, combatData, didWin, multiplier, monsterData, ownerPlayer, generatorEntry)
+        if not monsterData then
+                return
+        end
+
+        local reward = computeCombatExperience(participant, combatData, didWin, multiplier)
+        if reward <= 0 then
+                return
+        end
+
+        Leveling.AddExperience(monsterData, reward, {
+                Model = participant.instance,
+                Player = ownerPlayer,
+        })
+
+        if generatorEntry and type(generatorEntry.Data) == "table" then
+                generatorEntry.Data.Experience = monsterData.Experience
+                generatorEntry.Data.Level = monsterData.Level
+                generatorEntry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
+        end
+end
+
 function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
         print("Processing combat results...")
 
@@ -1719,22 +1822,30 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 	end
 
 	-- === RESULTS: wins + stat increases via _G.FUNCTIONS.distributePoints ===
-        local function applyResults(participant, didWin, multiplier)
+        local function applyResults(participant, didWin, multiplier, combatData)
                 local m = participant.instance
                 if not (m and m.Parent) then return end
                 local ownerId = m:GetAttribute("OwnerId")
+                local ownerKey = tonumber(ownerId)
+                local ownerPlr = ownerKey and game.Players:GetPlayerByUserId(ownerKey) or nil
+                local monsterData, entry = resolveOwnedMonsterData(ownerId)
 
                 -- Wins/Losses as attributes (visible & simple)
-		if didWin then
-			m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
-			if ownerId then
-				_G.DATA:Get(ownerId).Monster.Wins += 1
-			end
-		else
-			print("Loss")
-		end
+                if didWin then
+                        m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
+                        if ownerId and _G.DATA and typeof(_G.DATA.Get) == "function" then
+                                local ok, store = pcall(function()
+                                        return _G.DATA:Get(ownerId)
+                                end)
+                                if ok and type(store) == "table" and type(store.Monster) == "table" then
+                                        store.Monster.Wins = (store.Monster.Wins or 0) + 1
+                                end
+                        end
+                else
+                        print("Loss")
+                end
 
-		-- Stat bumps: 2 points for win, 1 for loss
+                -- Stat bumps: 2 points for win, 1 for loss
                 local basePoints = didWin and 5 or 10
                 local scaledPoints = basePoints * (multiplier or 1)
                 local points = math.max(1, math.floor(scaledPoints + 0.5))
@@ -1745,70 +1856,71 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
                         local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
                         dist = ok and res or nil
                 end
-		if not dist then
-			-- simple fallback: random +1s
-			dist = {}
-			for i = 1, points do
-				local k = keys[math.random(1, #keys)]
-				dist[k] = (dist[k] or 0) + 1
-			end
-		end
-		local StatUpdate = game.ReplicatedStorage.Remotes.StatUpdate
-                if ownerId then
-                        local ownerPlr = game.Players:GetPlayerByUserId(ownerId)
+                if not dist then
+                        -- simple fallback: random +1s
+                        dist = {}
+                        for i = 1, points do
+                                local k = keys[math.random(1, #keys)]
+                                dist[k] = (dist[k] or 0) + 1
+                        end
+                end
 
+                local StatUpdate = game.ReplicatedStorage.Remotes.StatUpdate
+                if ownerPlr then
                         StatUpdate:FireClient(ownerPlr, dist, ownerId)
                         if didWin then
                                 _G.EFFECTS.PlaySound("Success", {Where = ownerPlr.Character})
-			else
-				_G.EFFECTS.PlaySound("Fail", {Where = ownerPlr.Character})
-			end
-		end
-		-- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
+                        else
+                                _G.EFFECTS.PlaySound("Fail", {Where = ownerPlr.Character})
+                        end
+                end
+                -- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
                 for k, add in pairs(dist) do
                         if add and add ~= 0 then
                                 if k == "Hp" then
                                         local hum = m:FindFirstChildOfClass("Humanoid")
                                         if hum then
                                                 hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
-						-- don't fully heal; but keep current within new max
-						hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
-					end
-					m:SetAttribute("Hp", (m:GetAttribute("Hp") or 100) + add)
-				elseif k == "Mp" then
-					m:SetAttribute("MP", (m:GetAttribute("MP") or 100) + add)
-					m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
-				else
-					m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
+                                                -- don't fully heal; but keep current within new max
+                                                hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
+                                        end
+                                        m:SetAttribute("Hp", (m:GetAttribute("Hp") or 100) + add)
+                                elseif k == "Mp" then
+                                        m:SetAttribute("MP", (m:GetAttribute("MP") or 100) + add)
+                                        m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
+                                else
+                                        m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
                                 end
                         end
                 end
 
                 m:SetAttribute("LastRewardMultiplier", multiplier or 1)
 
+                applyCombatExperience(participant, combatData, didWin, multiplier, monsterData, ownerPlr, entry)
+
                 -- Optionally notify your data layer
                 if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
                         local pid = tonumber(ownerId or 0)
                         if pid and pid > 0 then
-                                local entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
-				if entry and entry.Data then
-					entry.Data.Wins = m:GetAttribute("Wins") or entry.Data.Wins or 0
+                                local generatorEntry = entry or _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
+                                if generatorEntry and generatorEntry.Data then
+                                        generatorEntry.Data.Wins = m:GetAttribute("Wins") or generatorEntry.Data.Wins or 0
 
-					local statsTargets = gatherStatsTables(pid, entry)
-					if #statsTargets > 0 then
-						syncMonsterStatsIntoTables(m, statsTargets)
-					end
-				end
-			end
-		end
-	end
+                                        local statsTargets = gatherStatsTables(pid, generatorEntry)
+                                        if #statsTargets > 0 then
+                                                syncMonsterStatsIntoTables(m, statsTargets)
+                                        end
+                                end
+                        end
+                end
+        end
 
 	-- Apply results to everyone
         for _, participant in pairs(combatData.participants) do
                 if participant.instance and participant.instance.Parent then
                         local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
                         local levelMultiplier = computeTargetLevelMultiplier(participant, combatData)
-                        applyResults(participant, didWin, levelMultiplier)
+                        applyResults(participant, didWin, levelMultiplier, combatData)
                 end
         end
 
@@ -1828,15 +1940,34 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 
 	-- === Your existing reset for survivors ===
 	for _, participant in pairs(combatData.participants) do
-		if participant.instance and participant.instance.Parent then
-			local ownerId = participant.instance:GetAttribute("OwnerId")
+                if participant.instance and participant.instance.Parent then
+                        local ownerId = participant.instance:GetAttribute("OwnerId")
 
-			if participant.currentHp <= 0 then
-				_G.STATES:SetState(participant.instance, "Dead")
-			else
-				-- Reset combat states
-				if participant.combatState and participant.combatStateKey then
-					if _G.STATES:IsInState(participant.instance, participant.combatState) then
+                        if participant.currentHp <= 0 then
+                                if ownerId then
+                                        local monsterData, entry = resolveOwnedMonsterData(ownerId)
+                                        local ownerPlr = nil
+                                        local ownerKey = tonumber(ownerId)
+                                        if ownerKey then
+                                                ownerPlr = game.Players:GetPlayerByUserId(ownerKey)
+                                        end
+                                        if monsterData then
+                                                Leveling.ApplyDeathPenalty(monsterData, 0.2, {
+                                                        Model = participant.instance,
+                                                        Player = ownerPlr,
+                                                })
+                                                if entry and entry.Data then
+                                                        entry.Data.Experience = monsterData.Experience
+                                                        entry.Data.Level = monsterData.Level
+                                                        entry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
+                                                end
+                                        end
+                                end
+                                _G.STATES:SetState(participant.instance, "Dead")
+                        else
+                                -- Reset combat states
+                                if participant.combatState and participant.combatStateKey then
+                                        if _G.STATES:IsInState(participant.instance, participant.combatState) then
 						_G.STATES:RemoveState(participant.instance, participant.combatState, participant.combatStateKey)
 					end
 				end

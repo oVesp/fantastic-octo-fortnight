@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local Moves = require(RP.Modules.Moves)
 local Personalities = require(RP.Modules.Personalities)
 local Races = require(RP.Modules.Races)
+local Leveling = require(RP.Modules:WaitForChild("Leveling"))
 --local template = require(RP.Prefabs.Default)
 local models = RP.Assets.Templates
 local AnimationManager = require(game.ReplicatedStorage.Modules.AnimationManager)
@@ -179,28 +180,32 @@ function module.RollMonster(ownerId, isNPC, options)
 	end
 
 	local name = _G.UTILS.nameGenerator()
-	local data = {
-		id = HttpService:GenerateGUID(false),
-		Name = name,
-		Race = race,
-		Stage = stage,
-		Level = level,
-		BaseRaceFamily = family,
-		OwnerId = ownerId,
-		Personality = personalityName,  -- Just store the name
-		Stats = scaledStats,
-		Moves = moves,
-		History = {race},
-		IsNPC = isNPC or false,
-		GeneratedWithLevel = level,
-		Appearance = {},
-		Age = 0,
-		Bond = 0,
-		Wins = 0,
-		SessionTime = 0,
-		CareMistakes = 0,
-		Element = "None"
-	}
+local data = {
+id = HttpService:GenerateGUID(false),
+Name = name,
+Race = race,
+Stage = stage,
+Level = level,
+Experience = Leveling.GetExperienceForLevel(level),
+BaseRaceFamily = family,
+OwnerId = ownerId,
+Personality = personalityName,  -- Just store the name
+Stats = scaledStats,
+Moves = moves,
+History = {race},
+IsNPC = isNPC or false,
+GeneratedWithLevel = level,
+Appearance = {},
+Age = 0,
+Bond = 0,
+Wins = 0,
+SessionTime = 0,
+CareMistakes = 0,
+Element = "None"
+}
+
+Leveling.RefreshBaseline(data)
+data.LastEvolutionAttemptLevel = 0
 
 	local worked = {}
 	if ownerId then
@@ -284,17 +289,20 @@ function module.BuildMonster(monsterData, ownerId, options)
 	monsterModel:SetAttribute("Hp", stats.Hp or 100)
 	monsterModel:SetAttribute("MP", stats.Mp or 100)
 	monsterModel:SetAttribute("MaxMP", stats.Mp or 100)
-	monsterModel:SetAttribute("Strength", stats.Strength or stats.STR or 10)
-	monsterModel:SetAttribute("Defense", stats.Defense or stats.DEF or 10)
-	monsterModel:SetAttribute("Skill", stats.Skill or stats.SKL or 10)
-	monsterModel:SetAttribute("Speed", stats.Speed or stats.SPD or 10)
-	monsterModel:SetAttribute("Intelligence", stats.Intelligence or stats.INT or 10)
-	monsterModel:SetAttribute("Luck", stats.Luck or stats.LCK or 10)
-	monsterModel:SetAttribute("Name", monsterData.Name or monsterData.Race)
-	monsterModel:SetAttribute("Race", monsterData.Race)
-	monsterModel:SetAttribute("Personality", tostring(monsterData.Personality))
-	monsterModel:SetAttribute("Stage", monsterData.Stage)
-	monsterModel:SetAttribute("Level", monsterData.Level or 1) -- Add level attribute
+monsterModel:SetAttribute("Strength", stats.Strength or stats.STR or 10)
+monsterModel:SetAttribute("Defense", stats.Defense or stats.DEF or 10)
+monsterModel:SetAttribute("Skill", stats.Skill or stats.SKL or 10)
+monsterModel:SetAttribute("Speed", stats.Speed or stats.SPD or 10)
+monsterModel:SetAttribute("Intelligence", stats.Intelligence or stats.INT or 10)
+monsterModel:SetAttribute("Luck", stats.Luck or stats.LCK or 10)
+monsterModel:SetAttribute("Name", monsterData.Name or monsterData.Race)
+monsterModel:SetAttribute("Race", monsterData.Race)
+monsterModel:SetAttribute("Personality", tostring(monsterData.Personality))
+monsterModel:SetAttribute("Stage", monsterData.Stage)
+monsterModel:SetAttribute("Level", monsterData.Level or 1) -- Add level attribute
+monsterModel:SetAttribute("Experience", monsterData.Experience or 0)
+
+Leveling.SyncModel(monsterData, monsterModel)
 
 	local actualOwnerId = ownerId or monsterData.OwnerId
 	if actualOwnerId then

@@ -9,6 +9,10 @@ local TweenService = game:GetService('TweenService')
 local Debris = game:GetService('Debris')
 local PhysicsService = game:GetService("PhysicsService")
 local RS = game:GetService("RunService")
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+
+local Remotes = RP:WaitForChild('Remotes')
 
 local plr = game.Players.LocalPlayer
 
@@ -17,6 +21,24 @@ local LightningSparks = require(script.LightningBolt:WaitForChild('LightningSpar
 local bubbleModule = require(script:WaitForChild('BubbleModule'))
 local EffectPool = require(script:WaitForChild('EffectPoolManager'))
 local MoveVFX = require(RP.Modules:WaitForChild("MoveVFX"))
+
+local notificationEvent do
+        local existing = Remotes:FindFirstChild("EffectsNotification")
+        if not existing and RS:IsServer() then
+                existing = Instance.new("RemoteEvent")
+                existing.Name = "EffectsNotification"
+                existing.Parent = Remotes
+        end
+        notificationEvent = existing or Remotes:FindFirstChild("EffectsNotification")
+        if not notificationEvent then
+                local ok, evt = pcall(function()
+                        return Remotes:WaitForChild("EffectsNotification", 5)
+                end)
+                if ok then
+                        notificationEvent = evt
+                end
+        end
+end
 
 -- EmitterEffect com pooling
 function effects.EmitterEffect(info)
@@ -1161,10 +1183,76 @@ end
 
 -- Generic status tags: “Poisoned”, “Burning”, “Stunned”, etc.
 function effects.ShowStatus(where: Instance, label: string, isBuff: boolean?)
-	return _spawn(where, label or "Status", {
-		Color = isBuff and BUFF_CYAN or DEBUFF_PURP,
-		Size = 24,
-	})
+        return _spawn(where, label or "Status", {
+                Color = isBuff and BUFF_CYAN or DEBUFF_PURP,
+                Size = 24,
+        })
+end
+
+local function deliverNotification(payload)
+        payload = payload or {}
+        local header = payload.Title or payload.Header or "Notice"
+        local description = payload.Description or payload.Text or ""
+        local duration = payload.Duration or 4
+
+        local ok, err = pcall(function()
+                StarterGui:SetCore("SendNotification", {
+                        Title = header,
+                        Text = description,
+                        Duration = duration,
+                })
+        end)
+        if not ok then
+                warn("[Effects] Failed to show notification:", err)
+        end
+end
+
+if notificationEvent and not RS:IsServer() then
+        notificationEvent.OnClientEvent:Connect(deliverNotification)
+end
+
+--[[
+UI plan for custom notification widget:
+1. Create a ScreenGui named "NotificationsGui" inside PlayerGui.
+2. Inside it place a Frame anchored to the top-right corner with a UIListLayout for stacking.
+3. Build a NotificationTemplate Frame with a background, UIStroke, and UICorner; include:
+   • Title TextLabel (bold) for the header.
+   • Body TextLabel (wrapped) for the description.
+   • Optional ImageLabel for icons/status colors.
+4. Use TweenService to fade the frame in/out and to slide it vertically when multiple messages stack.
+5. This function should clone the template, set the texts, parent it to the stacking frame, and schedule cleanup.
+]]
+function effects.ShowNotification(info: table?)
+        info = info or {}
+        local title = info.Title or info.Header or "Notice"
+        local description = info.Description or info.Text or ""
+        local duration = info.Duration or 4
+
+        if RS:IsServer() then
+                if notificationEvent then
+                        local target = info.Player
+                        if typeof(target) ~= "Instance" or not target:IsA("Player") then
+                                local playerId = tonumber(info.PlayerId)
+                                if playerId then
+                                        target = Players:GetPlayerByUserId(playerId)
+                                end
+                        end
+                        if target then
+                                notificationEvent:FireClient(target, {
+                                        Title = title,
+                                        Description = description,
+                                        Duration = duration,
+                                })
+                        end
+                end
+                return
+        end
+
+        deliverNotification({
+                Title = title,
+                Description = description,
+                Duration = duration,
+        })
 end
 
 return effects
