@@ -6,18 +6,22 @@ return function()
                         StatusEffects._resetForTests()
                 end)
 
-                it("applies shield strength from the payload", function()
+                afterEach(function()
+                        StatusEffects._setNowForTests(nil)
+                end)
+
+                it("applies default shield strength when not provided", function()
                         local target = {}
 
-                        StatusEffects.Apply(target, {name = "Shield", dur = 6, power = 50})
+                        StatusEffects.Apply(target, {name = "Shield"})
 
-                        local remaining, absorbed = StatusEffects.AbsorbWithShield(target, 40)
-                        expect(absorbed).to.equal(40)
+                        local remaining, absorbed = StatusEffects.AbsorbWithShield(target, 15)
+                        expect(absorbed).to.equal(15)
                         expect(remaining).to.equal(0)
 
-                        remaining, absorbed = StatusEffects.AbsorbWithShield(target, 40)
-                        expect(absorbed).to.equal(10)
-                        expect(remaining).to.equal(30)
+                        remaining, absorbed = StatusEffects.AbsorbWithShield(target, 10)
+                        expect(absorbed).to.equal(5)
+                        expect(remaining).to.equal(5)
                 end)
 
                 it("applies custom damage over time values", function()
@@ -45,6 +49,26 @@ return function()
                         end)
 
                         expect(total).to.equal(3)
+                end)
+
+                it("uses default durations when none are provided", function()
+                        local target = {}
+                        local current = 0
+
+                        StatusEffects._setNowForTests(function()
+                                return current
+                        end)
+
+                        StatusEffects.Apply(target, {name = "Poison"})
+                        expect(StatusEffects.Has(target, "Poison")).to.equal(true)
+
+                        current += 3
+                        StatusEffects.Tick(3, function() end)
+                        expect(StatusEffects.Has(target, "Poison")).to.equal(true)
+
+                        current += 4
+                        StatusEffects.Tick(4, function() end)
+                        expect(StatusEffects.Has(target, "Poison")).to.equal(false)
                 end)
         end)
 end
