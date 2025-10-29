@@ -1,27 +1,22 @@
--- ModuleScript: ReplicatedStorage>Modules>MovesModules>VoidRay
-local VoidRay = {
-	id = "VoidRay",
-	name = "Void Ray",
-	rarity = "Amateur",
-	power = 30,
-	cooldown = 4.0,
-	minRange = 6,
-	maxRange = 18,
-	castTime = 0.9,
-	effects = {
-		{ type = "DamageOverTime", duration = 8, dps = 6, stacks = 1, status = "Burn" },
-		{ type = "Slow", duration = 4 },
-	},
-	tags = {"Magic", "Progenitor", "Ranged"},
+-- ModuleScript: ReplicatedStorage>Modules>MovesModules>PebbleShot
+local PebbleShot = {
+    id = "PebbleShot",
+    name = "Pebble Shot",
+    rarity = "Amateur",
+    power = 18,
+    cooldown = 2.6,
+    minRange = 4,
+    maxRange = 16,
+    castTime = 0.55,
+    castSpeed = 1.0,
+    lockMovement = true,
+    effects = {
+        { type = "Slow", duration = 3 },
+    },
+    tags = { "Ranged", "Construct" },
+
+    accuracy = 0.9,
+    mpCost = 4,
 }
 
--- Função de execução customizada para efeitos especiais
-function VoidRay.execute(attacker, target, combatManager)
-	-- Lógica customizada do Void Ray
-	-- Exemplo: aplicar debuff de redução de defesa
-	if combatManager and combatManager.ApplyMoveEffects then
-		combatManager:ApplyMoveEffects(attacker, target, VoidRay)
-	end
-end
-
-return VoidRay
+return PebbleShot

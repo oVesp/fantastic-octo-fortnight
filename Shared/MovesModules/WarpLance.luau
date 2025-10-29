@@ -1,27 +1,22 @@
 -- ModuleScript: ReplicatedStorage>Modules>MovesModules>WarpLance
 local WarpLance = {
-	id = "WarpLance",
-	name = "WarpLance",
-	rarity = "Amateur",
-	power = 10,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-	tags = {"Melee", "Universal"},
+    id = "WarpLance",
+    name = "Warp Lance",
+    rarity = "Advanced",
+    power = 26,
+    cooldown = 3.5,
+    minRange = 5,
+    maxRange = 18,
+    castTime = 0.65,
+    castSpeed = 1.05,
+    lockMovement = false,
+    effects = {
+        { type = "Slow", duration = 3 },
+    },
+    tags = { "Magic", "Progenitor", "Ranged", "Mobility" },
 
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    accuracy = 0.87,
+    mpCost = 12,
 }
-
--- Função de execução customizada (opcional)
--- function WarpLance.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para WarpLance, usar lógica genérica de dano
--- end
 
 return WarpLance

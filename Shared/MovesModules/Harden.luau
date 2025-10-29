@@ -1,27 +1,22 @@
--- ModuleScript: ReplicatedStorage>Modules>MovesModules>Singularity
-local Singularity = {
-	id = "Singularity",
-	name = "Singularity",
-	rarity = "Amateur",
-	power = 10,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-	tags = {"Melee", "Universal"},
+-- ModuleScript: ReplicatedStorage>Modules>MovesModules>Harden
+local Harden = {
+    id = "Harden",
+    name = "Harden",
+    rarity = "Amateur",
+    power = 0,
+    cooldown = 3.5,
+    minRange = 0,
+    maxRange = 6,
+    castTime = 0.5,
+    castSpeed = 1.0,
+    lockMovement = true,
+    effects = {
+        { type = "BuffSelf", status = "GuardUp", duration = 6 },
+    },
+    tags = { "Buff", "Defensive", "Construct" },
 
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    accuracy = 0.98,
+    mpCost = 5,
 }
 
--- Função de execução customizada (opcional)
--- function Singularity.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para Singularity, usar lógica genérica de dano
--- end
-
-return Singularity
+return Harden

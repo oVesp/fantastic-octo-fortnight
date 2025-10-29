@@ -1,26 +1,28 @@
 -- ModuleScript: ReplicatedStorage>Modules>MovesModules>QuickHook
 local QuickHook = {
-	id = "QuickHook",
-	name = "QuickHook",
-	rarity = "Amateur",
-	power = 15,
-	cooldown = 4.0,
-	minRange = 1,
-	maxRange = 5,
-	castTime = 2.0,
-	effects = {
-		{ type = "Haste", duration = 8 },
-	},
-	tags = {"Physical", "Progenitor", "Ranged"},
+    id = "QuickHook",
+    name = "Quick Hook",
+    rarity = "Amateur",
+    power = 20,
+    cooldown = 2.8,
+    minRange = 1,
+    maxRange = 5,
+    castTime = 0.45,
+    castSpeed = 1.1,
+    lockMovement = false,
+    effects = {
+        { type = "Haste", duration = 4 },
+    },
+    tags = { "Melee", "Mobility", "Universal" },
+
+    accuracy = 0.92,
+    mpCost = 5,
 }
 
--- Função de execução customizada para efeitos especiais
 function QuickHook.execute(attacker, target, combatManager)
-	-- Lógica customizada do Void Ray
-	-- Exemplo: aplicar debuff de redução de defesa
-	if combatManager and combatManager.ApplyMoveEffects then
-		combatManager:ApplyMoveEffects(attacker, target, QuickHook)
-	end
+    if combatManager and combatManager.ApplyMoveEffects then
+        combatManager:ApplyMoveEffects(attacker, target, QuickHook)
+    end
 end
 
 return QuickHook

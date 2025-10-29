@@ -1,27 +1,22 @@
 -- ModuleScript: ReplicatedStorage>Modules>MovesModules>CosmicThread
 local CosmicThread = {
-	id = "CosmicThread",
-	name = "Cosmic Thread",
-	rarity = "Amateur",
-	power = 10,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-	tags = {"Melee", "Universal"},
+    id = "CosmicThread",
+    name = "Cosmic Thread",
+    rarity = "Advanced",
+    power = 20,
+    cooldown = 3.0,
+    minRange = 4,
+    maxRange = 14,
+    castTime = 0.75,
+    castSpeed = 0.95,
+    lockMovement = false,
+    effects = {
+        { type = "Slow", duration = 6 },
+    },
+    tags = { "Magic", "Progenitor", "Ranged" },
 
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    accuracy = 0.88,
+    mpCost = 10,
 }
-
--- Função de execução customizada (opcional)
--- function CosmicThread.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para CosmicThread, usar lógica genérica de dano
--- end
 
 return CosmicThread

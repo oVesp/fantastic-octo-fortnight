@@ -1,30 +1,23 @@
--- ModuleScript: ReplicatedStorage>Modules>MovesModules>BasicAttack
+-- ModuleScript: ReplicatedStorage>Modules>MovesModules>Fortify
 local Fortify = {
-	id = "Fortify",
-	name = "Fortify",
-	rarity = "Amateur",
-	power = 0,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-        effects = {
-                { type = "BuffSelf", duration = 8 },
-                { type = "FortifyAura", duration = 8, refreshDuration = 4 },
-        },
-        tags = {"Buff", "Defensive", "Construct"},
+    id = "Fortify",
+    name = "Fortify",
+    rarity = "Amateur",
+    power = 0,
+    cooldown = 5.0,
+    minRange = 0,
+    maxRange = 8,
+    castTime = 0.6,
+    castSpeed = 1.0,
+    lockMovement = true,
+    effects = {
+        { type = "BuffSelf", status = "GuardUp", duration = 8 },
+        { type = "FortifyAura", duration = 8, refreshDuration = 4 },
+    },
+    tags = { "Buff", "Defensive", "Construct" },
 
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    accuracy = 0.98,
+    mpCost = 8,
 }
-
--- Função de execução customizada (opcional)
--- function Fortify.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para Fortify, usar lógica genérica de dano
--- end
 
 return Fortify
