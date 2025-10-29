@@ -2,6 +2,8 @@
 local Moves = {}
 Moves.__index = Moves
 
+local StatusEffectDefs = require(script.Parent.StatusEffectDefs)
+
 -- Constantes e configurações padrão
 local DEFAULTS = {
         baseAccuracy = 0.88,
@@ -48,17 +50,17 @@ local DEFAULTS = {
 }
 
 local EFFECT_DEFAULTS = {
-        Slow = { status = "Slow", target = "target", duration = 6 },
-        Stun = { status = "Stun", target = "target", duration = 1 },
-        Burn = { status = "Burn", target = "target", duration = 6, dps = 4 },
-        DamageOverTime = { status = "Poison", target = "target", duration = 6, dps = 3 },
-        Shield = { status = "Shield", target = "target", duration = 6, power = 20 },
-        BuffSelf = { status = "GuardUp", target = "attacker", duration = 6 },
-        Haste = { status = "Haste", target = "attacker", duration = 5 },
-        Silence = { status = "Silence", target = "target", duration = 6 },
-        Root = { status = "Root", target = "target", duration = 6 },
-        Invulnerability = { status = "Invulnerability", target = "attacker", duration = 1 },
-        Disarm = { status = "Weaken", target = "target", duration = 6 },
+        Slow = { status = "Slow", target = "target" },
+        Stun = { status = "Stun", target = "target" },
+        Burn = { status = "Burn", target = "target" },
+        DamageOverTime = { status = "Poison", target = "target" },
+        Shield = { status = "Shield", target = "target" },
+        BuffSelf = { status = "GuardUp", target = "attacker" },
+        Haste = { status = "Haste", target = "attacker" },
+        Silence = { status = "Silence", target = "target" },
+        Root = { status = "Root", target = "target" },
+        Invulnerability = { status = "Invulnerability", target = "attacker" },
+        Disarm = { status = "Weaken", target = "target" },
         Pull = { status = "Root", target = "target", duration = 1 },
         FortifyAura = { status = "GuardUp", target = "attacker", duration = 8, refreshDuration = 4 },
 }
@@ -73,6 +75,30 @@ local function cloneValue(value)
                 return table.clone(value)
         end
         return value
+end
+
+local function applyStatusDefinitionDefaults(effect)
+        local statusName = effect.status
+        if typeof(statusName) ~= "string" then
+                return
+        end
+
+        local def = StatusEffectDefs[statusName]
+        if not def then
+                return
+        end
+
+        if effect.duration == nil and def.defaultDuration then
+                effect.duration = def.defaultDuration
+        end
+
+        if effect.power == nil and def.defaultPower ~= nil then
+                effect.power = def.defaultPower
+        end
+
+        if effect.dps == nil and def.dot and def.dot.dps ~= nil then
+                effect.dps = def.dot.dps
+        end
 end
 
 local function normalizeEffects(move)
@@ -111,15 +137,7 @@ local function normalizeEffects(move)
                                 if effect.status == nil then
                                         effect.status = (defaults and defaults.status) or effect.type
                                 end
-                                if effect.duration == nil then
-                                        effect.duration = (defaults and defaults.duration) or 0
-                                end
-                                if effect.power == nil and defaults and defaults.power ~= nil then
-                                        effect.power = defaults.power
-                                end
-                                if effect.dps == nil and defaults and defaults.dps ~= nil then
-                                        effect.dps = defaults.dps
-                                end
+                                applyStatusDefinitionDefaults(effect)
 
                                 table.insert(normalized, effect)
                         else

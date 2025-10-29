@@ -9,34 +9,74 @@ local RunService do
         RunService = ok and service or nil
 end
 
+local function tryRequire(moduleScript)
+        if not moduleScript then
+                return nil
+        end
+        local ok, result = pcall(require, moduleScript)
+        if ok and type(result) == "table" then
+                return result
+        end
+        return nil
+end
+
+local function loadDefinitions()
+        local defs
+
+        local ok, rs = pcall(function()
+                return game:GetService("ReplicatedStorage")
+        end)
+        if ok and rs then
+                local modules = rs:FindFirstChild("Modules")
+                if modules then
+                        defs = tryRequire(modules:FindFirstChild("StatusEffectDefs"))
+                end
+        end
+
+        if not defs and script.Parent then
+                local sharedRoot = script.Parent.Parent and script.Parent.Parent.Parent
+                        and script.Parent.Parent.Parent:FindFirstChild("Shared")
+                if sharedRoot then
+                        defs = tryRequire(sharedRoot:FindFirstChild("StatusEffectDefs"))
+                end
+        end
+
+        if not defs then
+                defs = {
+                        Haste        = { type="Buff",   maxStacks=1,  pri=20,  mods={ Speed = {mult=1.20} }, defaultDuration = 5 },
+                        Berserk      = { type="Buff",   maxStacks=1,  pri=10,  mods={ Strength = {mult=1.25}, Defense = {mult=0.9} }, defaultDuration = 6 },
+                        GuardUp      = { type="Buff",   maxStacks=1,  pri=18,  mods={ Defense = {mult=1.25} }, defaultDuration = 6 },
+                        Focus        = { type="Buff",   maxStacks=3,  pri=12,  mods={ Skill = {add=5} }, defaultDuration = 6 },
+                        ArcaneMind   = { type="Buff",   maxStacks=1,  pri=12,  mods={ Intelligence = {mult=1.20} }, defaultDuration = 6 },
+
+                        Slow         = { type="Debuff", maxStacks=2,  pri=15,  mods={ Speed = {mult=0.8} }, defaultDuration = 6 },
+                        Weaken       = { type="Debuff", maxStacks=2,  pri=14,  mods={ Strength = {mult=0.85} }, defaultDuration = 6 },
+                        Silence      = { type="Debuff", maxStacks=1,  pri=30,  flags={ NoCast=true }, defaultDuration = 6 },
+                        Burn         = { type="Debuff", maxStacks=3,  pri=10,  dot={ dps=4 }, defaultDuration = 6 },
+                        Poison       = { type="Debuff", maxStacks=3,  pri=10,  dot={ dps=3 }, defaultDuration = 6 },
+                        Stun         = { type="CC",     maxStacks=1,  pri=100, flags={ Stunned=true, NoMove=true, NoCast=true }, defaultDuration = 1 },
+                        Root         = { type="CC",     maxStacks=1,  pri=80,  flags={ NoMove=true }, defaultDuration = 6 },
+
+                        Shield       = { type="Shield", maxStacks=1,  pri=50,  shield=true, defaultPower = 20, defaultDuration = 6 },
+                        Invulnerability = { type="State", maxStacks=1, pri=200, flags={ Invuln=true }, defaultDuration = 1 },
+                }
+        end
+
+        return defs
+end
+
 local SE = {}
 
--- Definições canônicas: como cada efeito impacta stats/estados
--- type = "Buff" | "Debuff" | "CC" | "Shield" | "State"
-SE.DEFS = {
-	Haste        = { type="Buff",   maxStacks=1,  pri=20,  mods={ Speed = {mult=1.20} } },
-	Berserk      = { type="Buff",   maxStacks=1,  pri=10,  mods={ Strength = {mult=1.25}, Defense = {mult=0.9} } },
-	GuardUp      = { type="Buff",   maxStacks=1,  pri=18,  mods={ Defense = {mult=1.25} } },
-	Focus        = { type="Buff",   maxStacks=3,  pri=12,  mods={ Skill = {add=5} } },
-	ArcaneMind   = { type="Buff",   maxStacks=1,  pri=12,  mods={ Intelligence = {mult=1.20} } },
-
-	Slow         = { type="Debuff", maxStacks=2,  pri=15,  mods={ Speed = {mult=0.8} } },
-	Weaken       = { type="Debuff", maxStacks=2,  pri=14,  mods={ Strength = {mult=0.85} } },
-	Silence      = { type="Debuff", maxStacks=1,  pri=30,  flags={ NoCast=true } },
-	Burn         = { type="Debuff", maxStacks=3,  pri=10,  dot={ dps=4 }, mods={} },
-	Poison       = { type="Debuff", maxStacks=3,  pri=10,  dot={ dps=3 }, mods={} },
-	Stun         = { type="CC",     maxStacks=1,  pri=100, flags={ Stunned=true, NoMove=true, NoCast=true } },
-	Root         = { type="CC",     maxStacks=1,  pri=80,  flags={ NoMove=true } },
-
-        Shield       = { type="Shield", maxStacks=1,  pri=50,  shield=true, defaultPower = 20 }, -- valor definido na aplicação
-	Invulnerability = { type="State", maxStacks=1, pri=200, flags={ Invuln=true } },
-}
+SE.DEFS = loadDefinitions()
 
 -- Armazena estados por Instance
 -- Map<Instance, { active = { [name] = { stacks, expiresAt, power, source, lastTickHpDot } }, sumMods = {} , flags = {} , shieldHp = number }>
 local STORE: {[Instance]: any} = {}
 
-local function now() return os.clock() end
+local _now = os.clock
+local function now()
+        return _now()
+end
 
 local function ensure(obj)
 	local rec = STORE[obj]
@@ -64,13 +104,16 @@ function SE.Apply(target: Instance, info, source: Instance?)
         end
 
         -- renovar duração e ajustar stacks
-        local duration = math.max(0.1, info.dur or 0)
+        local duration = info.dur or info.duration or def.defaultDuration or 0
+        if duration > 0 then
+                duration = math.max(0.1, duration)
+        end
         slot.expiresAt = now() + duration
         slot.stacks = math.max(1, math.min(maxStacks, stacks))
         slot.source = source or slot.source
 
         local powerValue = info.power
-        if powerValue == nil and def.shield then
+        if powerValue == nil then
                 powerValue = def.defaultPower
         end
         if powerValue ~= nil then
@@ -95,9 +138,13 @@ function SE.Apply(target: Instance, info, source: Instance?)
 end
 
 function SE.Remove(target: Instance, name: string)
-	local R = STORE[target]
-	if not R or not R.active[name] then return end
-	R.active[name] = nil
+        local R = STORE[target]
+        if not R or not R.active[name] then return end
+        local def = SE.DEFS[name]
+        R.active[name] = nil
+        if def and def.shield then
+                R.shieldHp = 0
+        end
 end
 
 function SE.Has(target: Instance, name: string)
@@ -149,10 +196,13 @@ function SE.Tick(dt: number, callbackDamage)
         -- Limpeza & DoTs
         for target, R in pairs(STORE) do
                 for name, slot in pairs(R.active) do
+                        local def = SE.DEFS[name]
                         if slot.expiresAt <= now() then
                                 R.active[name] = nil
+                                if def and def.shield then
+                                        R.shieldHp = 0
+                                end
                         else
-                                local def = SE.DEFS[name]
                                 local dps = slot.dps
                                 if dps == nil and def and def.dot then
                                         dps = def.dot.dps
@@ -171,6 +221,15 @@ local ACC = 0
 function SE._resetForTests()
         table.clear(STORE)
         ACC = 0
+        _now = os.clock
+end
+
+function SE._setNowForTests(fn)
+        if type(fn) == "function" then
+            _now = fn
+        else
+            _now = os.clock
+        end
 end
 
 if RunService and RunService.Heartbeat and RunService.Heartbeat.Connect then
