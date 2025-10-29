@@ -1,63 +1,92 @@
 -- TrainingSystem/Utils.lua
 local RS = game:GetService("ReplicatedStorage")
 local Personalities = require(RS.Modules.Personalities)
+local Races = require(RS.Modules.Races)
+
+local STAT_ALIASES = {
+        Hp = {"Hp", "HP"},
+        Mp = {"Mp", "MP"},
+        Strength = {"Strength", "STR"},
+        Defense = {"Defense", "DEF"},
+        Skill = {"Skill", "SKL"},
+        Speed = {"Speed", "SPD"},
+        Intelligence = {"Intelligence", "INT"},
+        Luck = {"Luck", "LCK"},
+}
+
+local CANONICAL_FROM_KEY = {}
+for canonical, aliases in pairs(STAT_ALIASES) do
+        local list = { canonical }
+        local seen = { [canonical] = true }
+        for _, alias in ipairs(aliases) do
+                if not seen[alias] then
+                        table.insert(list, alias)
+                        seen[alias] = true
+                end
+        end
+        STAT_ALIASES[canonical] = list
+        for _, alias in ipairs(list) do
+                CANONICAL_FROM_KEY[alias] = canonical
+        end
+end
 
 local Utils = {}
 
 local function findStatsTableForMonster(player, monster)
-	if not (_G and _G.DATA and player) then
-		return nil
-	end
+        if not (_G and _G.DATA and player) then
+                return nil, nil
+        end
 
-	local ok, store = pcall(function()
-		return _G.DATA:Get(player)
-	end)
-	if not ok or type(store) ~= "table" then
-		return nil
-	end
+        local ok, store = pcall(function()
+                return _G.DATA:Get(player)
+        end)
+        if not ok or type(store) ~= "table" then
+                return nil, nil
+        end
 
-	local monsterData = store.Monster
-	if type(monsterData) ~= "table" then
-		return nil
-	end
+        local monsterData = store.Monster
+        if type(monsterData) ~= "table" then
+                return nil, nil
+        end
 
-	if type(monsterData.Stats) == "table" then
-		return monsterData.Stats
-	end
+        local stage = monsterData.Stage
+        if type(monsterData.Stats) == "table" then
+                return monsterData.Stats, monsterData.Stage
+        end
 
-	local activeMonster = monsterData.ActiveMonster
-	if type(activeMonster) == "table" and type(activeMonster.Stats) == "table" then
-		return activeMonster.Stats
-	end
+        local activeMonster = monsterData.ActiveMonster
+        if type(activeMonster) == "table" and type(activeMonster.Stats) == "table" then
+                return activeMonster.Stats, activeMonster.Stage or stage
+        end
 
-	local monsterId
-	if monster then
-		monsterId = monster:GetAttribute("id") or monster:GetAttribute("Id")
-	end
+        local monsterId
+        if monster then
+                monsterId = monster:GetAttribute("id") or monster:GetAttribute("Id")
+        end
 
-	local monsters = monsterData.Monsters
-	if type(monsters) == "table" then
-		if monsterId then
-			local directMatch = monsters[monsterId]
-			if type(directMatch) == "table" and type(directMatch.Stats) == "table" then
-				return directMatch.Stats
-			end
+        local monsters = monsterData.Monsters
+        if type(monsters) == "table" then
+                if monsterId then
+                        local directMatch = monsters[monsterId]
+                        if type(directMatch) == "table" and type(directMatch.Stats) == "table" then
+                                return directMatch.Stats, directMatch.Stage or stage
+                        end
 
-			for _, m in pairs(monsters) do
-				if type(m) == "table" and (m.id == monsterId or m.Id == monsterId) and type(m.Stats) == "table" then
-					return m.Stats
-				end
-			end
-		end
+                        for _, m in pairs(monsters) do
+                                if type(m) == "table" and (m.id == monsterId or m.Id == monsterId) and type(m.Stats) == "table" then
+                                        return m.Stats, m.Stage or stage
+                                end
+                        end
+                end
 
-		for _, m in pairs(monsters) do
-			if type(m) == "table" and type(m.Stats) == "table" then
-				return m.Stats
-			end
-		end
-	end
+                for _, m in pairs(monsters) do
+                        if type(m) == "table" and type(m.Stats) == "table" then
+                                return m.Stats, m.Stage or stage
+                        end
+                end
+        end
 
-	return nil
+        return nil, stage
 end
 
 -- === Centralized success evaluation (TEMP: 25% fail) ===
@@ -122,14 +151,11 @@ function Utils.ComputeGains(monster: Model, baseBonus)
 	local personalityName = monster:GetAttribute("Personality")
 	local raceName = monster:GetAttribute("Race")
 
-	local Personalities = require(game.ReplicatedStorage.Modules.Personalities)
-	local Races = require(game.ReplicatedStorage.Modules.Races)
-
-	-- Load personality multipliers
-	local personalityMult = {}
-	if personalityName and Personalities.Personalities[personalityName] then
-		personalityMult = Personalities.Personalities[personalityName].trainingMultipliers or {}
-	end
+        -- Load personality multipliers
+        local personalityMult = {}
+        if personalityName and Personalities.Personalities[personalityName] then
+                personalityMult = Personalities.Personalities[personalityName].trainingMultipliers or {}
+        end
 
 	-- Race + fallback to family
 	local raceMult = {}
@@ -160,22 +186,129 @@ function Utils.ComputeGains(monster: Model, baseBonus)
 	return gains
 end
 
-function Utils.ApplyGains(monster: Model, gains: table, player: Player?)
-	-- Runtime attributes
-	for stat, v in pairs(gains) do
-		local cur = monster:GetAttribute(stat) or 0
-		monster:SetAttribute(stat, cur + v)
-	end
+local function getCurrentStatValue(container, aliases)
+        if not container then return nil end
+        for _, key in ipairs(aliases) do
+                local value = container[key]
+                if typeof(value) == "number" then
+                        return value
+                end
+        end
+        return nil
+end
 
-	-- Persistent data via proxy
-	local statsTable = findStatsTableForMonster(player, monster)
-	if statsTable then
-		for stat, v in pairs(gains) do
-			local cur = tonumber(statsTable[stat]) or tonumber(statsTable[string.upper(string.sub(stat,1,1))..string.sub(stat,2)]) or 0
-			statsTable[stat] = cur + v
-		end
-		-- No need to call save: proxy tracks changes and will persist automatically
-	end
+local function getAttributeStatValue(monster, aliases)
+        if not monster then return nil end
+        for _, key in ipairs(aliases) do
+                local value = monster:GetAttribute(key)
+                if typeof(value) == "number" then
+                        return value
+                end
+        end
+        return nil
+end
+
+local function resolveStage(monster, dataStage)
+        if monster then
+                local attrStage = monster:GetAttribute("Stage")
+                if attrStage then
+                        return attrStage
+                end
+        end
+        if dataStage then
+                return dataStage
+        end
+        if monster then
+                local race = monster:GetAttribute("Race")
+                if race then
+                        local ok, stage = pcall(function()
+                                return Races:GetStage(race)
+                        end)
+                        if ok and stage then
+                                return stage
+                        end
+                end
+        end
+        return nil
+end
+
+function Utils.ApplyGains(monster: Model?, gains: table, player: Player?)
+        if typeof(gains) ~= "table" or not next(gains) then
+                return
+        end
+
+        local statsTable, dataStage = findStatsTableForMonster(player, monster)
+        local stage = resolveStage(monster, dataStage)
+
+        local zeroedKeys = nil
+
+        for statKey, delta in pairs(gains) do
+                local canonical = CANONICAL_FROM_KEY[statKey] or statKey
+                local aliases = STAT_ALIASES[canonical] or { canonical }
+                local numericDelta = tonumber(delta) or 0
+                if numericDelta ~= numericDelta then
+                        numericDelta = 0
+                end
+
+                local currentValue = getCurrentStatValue(statsTable, aliases)
+                if currentValue == nil then
+                        currentValue = getAttributeStatValue(monster, aliases)
+                end
+                currentValue = tonumber(currentValue) or 0
+
+                local cap = nil
+                if stage then
+                        local ok, capResult = pcall(function()
+                                return Races:GetStatCapForStage(stage, canonical)
+                        end)
+                        if ok and typeof(capResult) == "number" then
+                                cap = capResult
+                        end
+                end
+
+                local proposed = currentValue + numericDelta
+                if cap then
+                        proposed = math.min(proposed, cap)
+                        if currentValue > cap then
+                                proposed = math.min(currentValue, cap)
+                        end
+                end
+
+                if proposed < 0 then
+                        proposed = 0
+                end
+
+                proposed = math.floor(proposed + 0.5)
+
+                local appliedDelta = proposed - currentValue
+                if appliedDelta <= 0 then
+                        appliedDelta = 0
+                        zeroedKeys = zeroedKeys or {}
+                        table.insert(zeroedKeys, statKey)
+                else
+                        gains[statKey] = appliedDelta
+                end
+
+                if statsTable then
+                        for _, key in ipairs(aliases) do
+                                statsTable[key] = proposed
+                        end
+                end
+
+                if monster then
+                        for _, key in ipairs(aliases) do
+                                if monster:GetAttribute(key) ~= nil or key == statKey then
+                                        monster:SetAttribute(key, proposed)
+                                end
+                        end
+                end
+        end
+
+        if zeroedKeys then
+                for _, key in ipairs(zeroedKeys) do
+                        gains[key] = nil
+                end
+        end
 end
 
 return Utils

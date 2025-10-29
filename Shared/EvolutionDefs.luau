@@ -35,7 +35,13 @@ EvolutionDefs.RaceStage = {
 }
 
 function EvolutionDefs:GetEvolutionChance(currentRace, ctx, candidate)
-	if not candidate or not candidate.gates then return 0 end
+        if not candidate then
+                return 0
+        end
+
+        if not candidate.gates then
+                return 1.0
+        end
 
 	local progress = 0
 	local totalGates = 0
