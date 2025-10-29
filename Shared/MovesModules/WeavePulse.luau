@@ -2,19 +2,20 @@
 local WeavePulse = {
     id = "WeavePulse",
     name = "Weave Pulse",
+    description = "Emit a pulse of cosmic thread energy that weakens foes.",
     rarity = "Amateur",
-    power = 15,
-    cooldown = 2.1,
-    minRange = 2,
-    maxRange = 12,
-    castTime = 0.6,
+    power = 18,
+    cooldown = 2.2,
+    minRange = 3,
+    maxRange = 14,
+    castTime = 0.55,
     castSpeed = 1.0,
     lockMovement = true,
-    effects = {},
     tags = { "Magic", "Progenitor", "Ranged" },
-
-    accuracy = 0.9,
-    mpCost = 6,
+    effects = {
+        { type = "Disarm", duration = 2, chance = 0.4 },
+    },
+    mpCost = 8,
 }
 
 return WeavePulse

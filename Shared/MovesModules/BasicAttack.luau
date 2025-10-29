@@ -2,18 +2,17 @@
 local BasicAttack = {
     id = "BasicAttack",
     name = "Basic Attack",
+    description = "Reliable strike with no MP cost.",
     rarity = "Amateur",
-    power = 12,
-    cooldown = 1.4,
+    power = 14,
+    cooldown = 1.6,
     minRange = 0,
     maxRange = 6,
-    castTime = 0.4,
+    castTime = 0.45,
     castSpeed = 1.0,
     lockMovement = true,
     effects = {},
     tags = { "Melee", "Universal" },
-
-    accuracy = 0.95,
     mpCost = 0,
 }
 

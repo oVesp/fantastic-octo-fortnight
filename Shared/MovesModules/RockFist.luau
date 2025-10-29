@@ -2,21 +2,20 @@
 local RockFist = {
     id = "RockFist",
     name = "Rock Fist",
+    description = "Drive a stone-coated fist into the foe for burst damage.",
     rarity = "Amateur",
-    power = 28,
-    cooldown = 3.4,
+    power = 32,
+    cooldown = 3.6,
     minRange = 0,
     maxRange = 6,
-    castTime = 0.7,
-    castSpeed = 0.9,
+    castTime = 0.6,
+    castSpeed = 0.95,
     lockMovement = true,
-    effects = {
-        { type = "Stun", duration = 1 },
-    },
     tags = { "Melee", "Construct" },
-
-    accuracy = 0.88,
-    mpCost = 6,
+    effects = {
+        { type = "Stun", duration = 1.2, chance = 0.5 },
+    },
+    mpCost = 9,
 }
 
 return RockFist

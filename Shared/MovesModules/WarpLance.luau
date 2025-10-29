@@ -2,21 +2,21 @@
 local WarpLance = {
     id = "WarpLance",
     name = "Warp Lance",
+    description = "Blink-step forward and skewer the target with a threaded lance.",
     rarity = "Advanced",
-    power = 26,
-    cooldown = 3.5,
-    minRange = 5,
-    maxRange = 18,
-    castTime = 0.65,
-    castSpeed = 1.05,
+    power = 28,
+    cooldown = 3.4,
+    minRange = 4,
+    maxRange = 20,
+    castTime = 0.6,
+    castSpeed = 1.1,
     lockMovement = false,
-    effects = {
-        { type = "Slow", duration = 3 },
-    },
     tags = { "Magic", "Progenitor", "Ranged", "Mobility" },
-
-    accuracy = 0.87,
-    mpCost = 12,
+    effects = {
+        { type = "Slow", duration = 3, chance = 0.6 },
+        { type = "Haste", duration = 2 },
+    },
+    mpCost = 14,
 }
 
 return WarpLance

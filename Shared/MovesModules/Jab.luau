@@ -2,19 +2,17 @@
 local Jab = {
     id = "Jab",
     name = "Jab",
+    description = "Fast poke that keeps the pressure up.",
     rarity = "Amateur",
     power = 16,
-    cooldown = 1.6,
+    cooldown = 1.3,
     minRange = 0,
     maxRange = 5,
     castTime = 0.25,
-    castSpeed = 1.15,
+    castSpeed = 1.2,
     lockMovement = false,
-    effects = {},
     tags = { "Melee", "Universal" },
-
-    accuracy = 0.97,
-    mpCost = 2,
+    mpCost = 3,
 }
 
 return Jab

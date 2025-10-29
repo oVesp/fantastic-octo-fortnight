@@ -2,21 +2,20 @@
 local Feint = {
     id = "Feint",
     name = "Feint",
+    description = "Quick jab that throws opponents off-balance.",
     rarity = "Amateur",
-    power = 12,
-    cooldown = 2.2,
+    power = 10,
+    cooldown = 2.4,
     minRange = 0,
     maxRange = 5,
-    castTime = 0.35,
-    castSpeed = 1.1,
+    castTime = 0.3,
+    castSpeed = 1.15,
     lockMovement = false,
-    effects = {
-        { type = "Disarm", duration = 3 },
-    },
     tags = { "Melee", "Debuff", "Universal" },
-
-    accuracy = 0.93,
-    mpCost = 3,
+    effects = {
+        { type = "Disarm", duration = 3, chance = 0.6 },
+    },
+    mpCost = 4,
 }
 
 return Feint

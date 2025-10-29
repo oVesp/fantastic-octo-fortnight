@@ -2,21 +2,20 @@
 local QuickHook = {
     id = "QuickHook",
     name = "Quick Hook",
+    description = "Step in with a looping hook that speeds the user up on hit.",
     rarity = "Amateur",
-    power = 20,
-    cooldown = 2.8,
+    power = 24,
+    cooldown = 3.0,
     minRange = 1,
     maxRange = 5,
-    castTime = 0.45,
+    castTime = 0.4,
     castSpeed = 1.1,
     lockMovement = false,
-    effects = {
-        { type = "Haste", duration = 4 },
-    },
     tags = { "Melee", "Mobility", "Universal" },
-
-    accuracy = 0.92,
-    mpCost = 5,
+    effects = {
+        { type = "Haste", duration = 3 },
+    },
+    mpCost = 6,
 }
 
 function QuickHook.execute(attacker, target, combatManager)

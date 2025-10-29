@@ -2,21 +2,20 @@
 local Harden = {
     id = "Harden",
     name = "Harden",
+    description = "Briefly reinforce your plating for a modest guard boost.",
     rarity = "Amateur",
     power = 0,
-    cooldown = 3.5,
+    cooldown = 3.0,
     minRange = 0,
     maxRange = 6,
-    castTime = 0.5,
-    castSpeed = 1.0,
+    castTime = 0.4,
+    castSpeed = 1.05,
     lockMovement = true,
-    effects = {
-        { type = "BuffSelf", status = "GuardUp", duration = 6 },
-    },
     tags = { "Buff", "Defensive", "Construct" },
-
-    accuracy = 0.98,
-    mpCost = 5,
+    effects = {
+        { type = "BuffSelf", status = "GuardUp", duration = 6, power = 0.15 },
+    },
+    mpCost = 6,
 }
 
 return Harden

@@ -2,21 +2,20 @@
 local PebbleShot = {
     id = "PebbleShot",
     name = "Pebble Shot",
+    description = "Launch a cluster of stones that chip foes down at range.",
     rarity = "Amateur",
-    power = 18,
-    cooldown = 2.6,
-    minRange = 4,
-    maxRange = 16,
-    castTime = 0.55,
+    power = 20,
+    cooldown = 2.8,
+    minRange = 5,
+    maxRange = 18,
+    castTime = 0.5,
     castSpeed = 1.0,
     lockMovement = true,
-    effects = {
-        { type = "Slow", duration = 3 },
-    },
     tags = { "Ranged", "Construct" },
-
-    accuracy = 0.9,
-    mpCost = 4,
+    effects = {
+        { type = "Slow", duration = 3, chance = 0.7 },
+    },
+    mpCost = 7,
 }
 
 return PebbleShot
