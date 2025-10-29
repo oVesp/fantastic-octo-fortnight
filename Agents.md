@@ -427,9 +427,9 @@ When working on this project:
 - `CombatUpdate` - Combat state synchronization
 
 ### Directory Shortcuts
-- `RS.Modules` - ReplicatedStorage shared modules
-- `RS.Assets.Templates` - Monster models
-- `RS.Remotes` - RemoteEvents and RemoteFunctions
+- `RP.Modules` - ReplicatedStorage shared modules
+- `RP.Assets.Templates` - Monster models
+- `RP.Remotes` - RemoteEvents and RemoteFunctions
 
 ---
 
