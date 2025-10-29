@@ -26,7 +26,7 @@ Server-side Scripts that manage game logic, data, and combat:
 - **MonsterGenerator.luau** - Monster creation and stat generation
 - **EvolutionManager.luau** - Handles monster evolution logic and requirements
 - **QueueManager.luau** / **QueueService.luau** - Matchmaking and battle queues
-- **MonsterSpawner.luau** - NPC and wild monster spawning
+- **MonsterSpawner.luau** - Nurse NPC monster spawning interactions
 - **Data/** - Player data management and persistence
 
 ### Shared Modules (`Shared/`)
@@ -144,7 +144,9 @@ return {
 3. Register the move in `Shared/Moves.luau` move list
 
 ### 4. Status Effects System
-Status effects modify monster stats, apply DoT, or control actions. See `Shared/StatusEffects.md` for comprehensive documentation.
+Status effects modify monster stats, apply DoT, or control actions. 
+
+**For comprehensive documentation on status effects**, including detailed mechanics, implementation patterns, buff/debuff design, DoT calculations, crowd control timing, and integration best practices, see `Shared/StatusEffects.md`. This section provides a quick reference for common development tasks.
 
 **Status Effect Categories:**
 - **Buffs** - Beneficial effects (Haste, Guard Up, Berserk)
@@ -152,6 +154,8 @@ Status effects modify monster stats, apply DoT, or control actions. See `Shared/
 - **DoTs** - Damage over Time (Poison, Burn, Bleed)
 - **CC** - Crowd Control (Stun, Freeze, Sleep, Silence)
 - **Unique** - Special effects (Taunt, Fear, Curse)
+
+**Note:** For detailed information about status effects including mechanics, duration, stacking rules, and implementation recommendations, refer to `Shared/StatusEffects.md`.
 
 **Status Effect Structure:**
 ```lua
