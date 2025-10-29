@@ -1,27 +1,23 @@
 -- ModuleScript: ReplicatedStorage>Modules>MovesModules>Singularity
 local Singularity = {
-	id = "Singularity",
-	name = "Singularity",
-	rarity = "Amateur",
-	power = 10,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-	tags = {"Melee", "Universal"},
-
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    id = "Singularity",
+    name = "Singularity",
+    description = "Collapse space into a miniature singularity that drags everything inward.",
+    rarity = "Specialist",
+    power = 40,
+    cooldown = 6.5,
+    minRange = 2,
+    maxRange = 18,
+    castTime = 1.15,
+    castSpeed = 0.85,
+    lockMovement = true,
+    tags = { "Magic", "Progenitor", "Ranged", "AoE" },
+    effects = {
+        { type = "Pull", duration = 1.2 },
+        { type = "Slow", duration = 4 },
+        { type = "DamageOverTime", duration = 4, dps = 8 },
+    },
+    mpCost = 22,
 }
-
--- Função de execução customizada (opcional)
--- function Singularity.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para Singularity, usar lógica genérica de dano
--- end
 
 return Singularity

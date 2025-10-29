@@ -396,16 +396,26 @@ function EvolutionManager.StartEvolution(player: Player, playerData, trigger, op
         end
 
         local currentLevel = monsterData.Level or monsterData.level or 1
-        if monsterData.LastEvolutionAttemptLevel == currentLevel then
+        local previousAttemptLevel = monsterData.LastEvolutionAttemptLevel
+
+        if previousAttemptLevel == currentLevel then
                 return false, "Evolution already attempted at this level"
         end
 
+        monsterData.LastEvolutionAttemptLevel = currentLevel
+
         local ok, targetOrReason, chance = EvolutionManager.TryEvolve(monsterData, trigger, opts)
         if not ok then
+                if typeof(targetOrReason) == "string" then
+                        local reason = string.lower(targetOrReason)
+                        if reason:find("no current race")
+                                or reason:find("no evolutions available")
+                                or reason:find("invalid") then
+                                monsterData.LastEvolutionAttemptLevel = previousAttemptLevel
+                        end
+                end
                 return false, targetOrReason
         end
-
-        monsterData.LastEvolutionAttemptLevel = currentLevel
 
         print(string.format("[EvolutionManager] Evolution triggered for %s via %s (%.1f%% chance)",
                 player.Name, trigger, (chance or 0) * 100))

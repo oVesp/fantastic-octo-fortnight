@@ -1,27 +1,21 @@
 -- ModuleScript: ReplicatedStorage>Modules>MovesModules>WeavePulse
 local WeavePulse = {
-	id = "WeavePulse",
-	name = "Weave Pulse",
-	rarity = "Amateur",
-	power = 10,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-	tags = {"Melee", "Universal"},
-
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    id = "WeavePulse",
+    name = "Weave Pulse",
+    description = "Emit a pulse of cosmic thread energy that weakens foes.",
+    rarity = "Amateur",
+    power = 18,
+    cooldown = 2.2,
+    minRange = 3,
+    maxRange = 14,
+    castTime = 0.55,
+    castSpeed = 1.0,
+    lockMovement = true,
+    tags = { "Magic", "Progenitor", "Ranged" },
+    effects = {
+        { type = "Disarm", duration = 2, chance = 0.4 },
+    },
+    mpCost = 8,
 }
-
--- Função de execução customizada (opcional)
--- function WeavePulse.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para WeavePulse, usar lógica genérica de dano
--- end
 
 return WeavePulse

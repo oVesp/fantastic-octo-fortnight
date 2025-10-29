@@ -1,27 +1,21 @@
--- ModuleScript: ReplicatedStorage>Modules>MovesModules>BasicAttack
+-- ModuleScript: ReplicatedStorage>Modules>MovesModules>RockFist
 local RockFist = {
-	id = "RockFist",
-	name = "RockFist",
-	rarity = "Amateur",
-        power = 22,
-	cooldown = 1.2,
-	minRange = 0,
-	maxRange = 6,
-	castTime = 0.4,
-	castSpeed = 1.0,
-	lockMovement = true,
-	effects = {},
-        tags = {"Melee", "Universal"},
-
-	-- Overrides específicos para este movimento
-	accuracy = 0.96,
-	mpCost = 0,
+    id = "RockFist",
+    name = "Rock Fist",
+    description = "Drive a stone-coated fist into the foe for burst damage.",
+    rarity = "Amateur",
+    power = 32,
+    cooldown = 3.6,
+    minRange = 0,
+    maxRange = 6,
+    castTime = 0.6,
+    castSpeed = 0.95,
+    lockMovement = true,
+    tags = { "Melee", "Construct" },
+    effects = {
+        { type = "Stun", duration = 1.2, chance = 0.5 },
+    },
+    mpCost = 9,
 }
-
--- Função de execução customizada (opcional)
--- function RockFist.execute(attacker, target)
---     -- Lógica customizada do movimento
---     -- Para RockFist, usar lógica genérica de dano
--- end
 
 return RockFist
