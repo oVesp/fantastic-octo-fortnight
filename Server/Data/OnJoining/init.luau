@@ -1,4 +1,4 @@
-local RP = game:GetService('ReplicatedStorage');
+local HttpService = game:GetService("HttpService")
 
 local queue_functions = require(script:WaitForChild('QueueFunctions'));
 
@@ -12,33 +12,93 @@ local module = {
 	--	data.Value.NewPlayer = false;
 	--end,
 
-	function(plr, data)
+        function(plr, data)
 
-		-- Only create a new monster if there's no monster id present or the player is flagged as NewPlayer.
-                if data.Value.Monster and data.Value.Monster.id then return end
-                local monster = _G.MONSTERGENERATOR.RollMonster(plr.UserId)
-                -- Merge generated monster data into the player's Monster table without overwriting full tables
-                data.Value.Monster = data.Value.Monster or {}
-                data.Value.Monster.Stats = data.Value.Monster.Stats or {}
-                data.Value.Monster.Moves = data.Value.Monster.Moves or {}
-                for k, v in pairs(monster) do
-                        if k == "Stats" then
-                                for sk, sv in pairs(v) do
-                                        data.Value.Monster.Stats[sk] = sv
-                                end
-                        elseif k == "Moves" then
-                                -- Ensure moves table exists and copy entries
-                                for i, mv in ipairs(v) do
-                                        data.Value.Monster.Moves[i] = mv
-                                end
-                        else
-                                data.Value.Monster[k] = v
+                local monsterData = data.Value.Monster
+                if typeof(monsterData) == "table" then
+                        local existingId = monsterData.id or monsterData.Id
+                        if typeof(existingId) == "string" and existingId ~= "" then
+                                monsterData.id = existingId
+                                monsterData.Id = existingId
+                                return
                         end
                 end
-		-- mark as initialized
-		data.Value.NewPlayer = false
 
-	end,
+                local generator = _G and _G.MONSTERGENERATOR
+                if not generator or typeof(generator.RollMonster) ~= "function" then
+                        warn("[Data.OnJoining] MonsterGenerator not ready; deferring monster bootstrap for", plr)
+                        task.delay(1, module[1], plr, data)
+                        return
+                end
+
+                local monster = generator.RollMonster(plr.UserId)
+                if typeof(monster) ~= "table" then
+                        warn("[Data.OnJoining] Failed to roll monster for", plr)
+                        return
+                end
+
+                local function deepCopy(tbl)
+                        local copy = {}
+                        for key, value in pairs(tbl) do
+                                if typeof(value) == "table" then
+                                        copy[key] = deepCopy(value)
+                                else
+                                        copy[key] = value
+                                end
+                        end
+                        return copy
+                end
+
+                local function normalizeMove(entry)
+                        if typeof(entry) == "table" then
+                                local copy = deepCopy(entry)
+                                local moveId = copy.id or copy.Id or (copy.move and (copy.move.id or copy.move.Id))
+                                if typeof(moveId) == "string" and moveId ~= "" then
+                                        copy.id = moveId
+                                        copy.Id = moveId
+                                        if typeof(copy.move) == "table" then
+                                                copy.move.id = moveId
+                                                copy.move.Id = moveId
+                                        end
+                                        return copy
+                                end
+                                return nil
+                        elseif typeof(entry) == "string" then
+                                if entry ~= "" then
+                                        return { id = entry, Id = entry }
+                                end
+                        end
+
+                        return nil
+                end
+
+                local normalizedMonster = deepCopy(monster)
+                normalizedMonster.id = normalizedMonster.id or normalizedMonster.Id or HttpService:GenerateGUID(false)
+                normalizedMonster.Id = normalizedMonster.id
+                normalizedMonster.OwnerId = normalizedMonster.OwnerId or plr.UserId
+                normalizedMonster.GeneratedWithLevel = normalizedMonster.GeneratedWithLevel or normalizedMonster.Level
+                normalizedMonster.Stats = deepCopy(monster.Stats or {})
+
+                local moves = {}
+                for _, entry in ipairs(monster.Moves or {}) do
+                        local normalized = normalizeMove(entry)
+                        if normalized then
+                                table.insert(moves, normalized)
+                        end
+                end
+                normalizedMonster.Moves = moves
+
+                data.Value.Monster = normalizedMonster
+                data.Value.Level = normalizedMonster.Level or data.Value.Level or 1
+                data.Value.Experience = normalizedMonster.Experience or data.Value.Experience or 0
+                data.Value.NewPlayer = false
+
+                local saveResult = data:Save()
+                if saveResult ~= "Saved" then
+                        warn("[Data.OnJoining] Failed to persist starter monster for", plr, saveResult)
+                end
+
+        end,
 
 	function(plr, data) -- update versioning: game version is now up-to-date
 		local last_played = data.Value.LastUpdatePlayed;
