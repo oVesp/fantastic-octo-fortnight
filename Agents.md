@@ -407,6 +407,7 @@ When working on this project:
 6. Keep client and server code properly separated
 7. Use meaningful variable and function names
 8. Comment complex logic and formulas
+9. **IMPORTANT** Always read the Data System overview before any use cases.
 
 ## Quick Reference
 
