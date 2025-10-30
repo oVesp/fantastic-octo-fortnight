@@ -21,6 +21,14 @@ local EnhancedMovement = require(script.EnhancedMovement)
 local MoveUnlocks = require(game.ReplicatedStorage.Modules.MoveUnlocks)
 local Leveling = require(RS.Modules:WaitForChild("Leveling"))
 
+local Remotes = RS:WaitForChild("Remotes")
+local CombatCameraToggleRemote = Remotes:FindFirstChild("CombatCameraToggle")
+if not CombatCameraToggleRemote then
+        CombatCameraToggleRemote = Instance.new("RemoteEvent")
+        CombatCameraToggleRemote.Name = "CombatCameraToggle"
+        CombatCameraToggleRemote.Parent = Remotes
+end
+
 local SE_TICK_ACC = 0
 local function _applyDotDamage(target, amount, source, tag)
 	local residual, absorbed = StatusEffects.AbsorbWithShield(target, amount)
@@ -46,8 +54,8 @@ local combatParticipants = {}
 local combatLoopConnection = nil
 local onCombatEndCallbacks = {}
 local DEFAULT_ATTACK = {
-	id = "DefaultAttack",
-	name = "Default Attack",
+        id = "DefaultAttack",
+        name = "Default Attack",
 	rarity = "Amateur",
 	power = 8,
 	cooldown = 1.5,
@@ -84,13 +92,37 @@ local function moveHasEffect(move, effectType)
 end
 
 local function iterateMoveEffects(move, callback)
-	local effects = move and move.effects
-	if not effects then
-		return
-	end
-	for _, entry in ipairs(effects) do
-		callback(effectTypeOf(entry), entry)
-	end
+        local effects = move and move.effects
+        if not effects then
+                return
+        end
+        for _, entry in ipairs(effects) do
+                callback(effectTypeOf(entry), entry)
+        end
+end
+
+local function gatherParticipantModels(participantStore)
+        local models = {}
+        for _, participant in pairs(participantStore) do
+                local instance = participant and participant.instance
+                if typeof(instance) == "Instance" and instance:IsA("Model") then
+                        table.insert(models, instance)
+                end
+        end
+        return models
+end
+
+local function broadcastCombatCameraState(participantStore, isActive)
+        if not CombatCameraToggleRemote then
+                return
+        end
+
+        local models = gatherParticipantModels(participantStore)
+        if #models == 0 then
+                return
+        end
+
+        CombatCameraToggleRemote:FireAllClients(isActive, models)
 end
 
 local STAT_SYNC_RULES = {
@@ -507,8 +539,10 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 
 
 
-	--combatData.zone = COMBAT_ZONE.Create(combatId, participants, opts)
-	activeCombats[combatId] = combatData
+        --combatData.zone = COMBAT_ZONE.Create(combatId, participants, opts)
+        broadcastCombatCameraState(combatData.participants, true)
+
+        activeCombats[combatId] = combatData
 
 	if not combatLoopConnection or not combatLoopConnection.Connected then
 		combatLoopConnection = RunService.Heartbeat:Connect(CombatManager.StateBasedCombatLoop)
@@ -578,13 +612,15 @@ function CombatManager.EndCombat(combatId, results)
 		end
 	end
 
-	print(string.format("[CombatEnd] Winner: Team %s, Instance: %s", 
-		tostring(winningTeam), winningInstance and winningInstance.Name or "None"))
+        print(string.format("[CombatEnd] Winner: Team %s, Instance: %s",
+                tostring(winningTeam), winningInstance and winningInstance.Name or "None"))
 
-	CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
+        CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
 
-	-- Cleanup
-	COMBAT_ZONE.Remove(combatId)
+        broadcastCombatCameraState(combatData.participants, false)
+
+        -- Cleanup
+        COMBAT_ZONE.Remove(combatId)
 
 	for _, participant in pairs(combatData.participants) do
 		if participant.instance then
