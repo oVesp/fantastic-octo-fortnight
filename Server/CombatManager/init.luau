@@ -101,6 +101,10 @@ local function iterateMoveEffects(move, callback)
         end
 end
 
+local function roundNumber(value)
+        return math.floor((value or 0) + 0.5)
+end
+
 local function gatherParticipantModels(participantStore)
         local models = {}
         for _, participant in pairs(participantStore) do
@@ -1002,14 +1006,18 @@ function CombatManager.StateBasedCombatLoop(dt)
 end
 
 function CombatManager.ShowStateBillboard(participant, state)
-	if not _G.EFFECTS or not _G.EFFECTS.Billboard then
-		return
-	end
+        if not _G.EFFECTS or not _G.EFFECTS.Billboard then
+                return
+        end
 
-	local monster = participant.instance
-	if not monster or not monster.Parent then
-		return
-	end
+        if state == "POSITIONING" or state == "REPOSITIONING" or state == "CASTING" then
+                return
+        end
+
+        local monster = participant.instance
+        if not monster or not monster.Parent then
+                return
+        end
 
 	local billboardConfig = {
 		Where = monster,
@@ -1047,13 +1055,80 @@ function CombatManager.ShowStateBillboard(participant, state)
 		billboardConfig.Color = Color3.fromRGB(255, 255, 255) -- White
 	end
 
-	_G.EFFECTS.Billboard(billboardConfig)
+        _G.EFFECTS.Billboard(billboardConfig)
+end
+
+function CombatManager.ShowMoveNotification(participant, move, info)
+        if not participant or not move then
+                return
+        end
+        if not _G.EFFECTS or not _G.EFFECTS.Billboard then
+                return
+        end
+
+        local monster = participant.instance
+        if not monster or not monster.Parent then
+                return
+        end
+
+        local moveName = move.name or move.id
+        if not moveName or moveName == "" then
+                return
+        end
+
+        info = info or {}
+
+        local textParts = { moveName }
+        if info.missed then
+                table.insert(textParts, "(MISS)")
+        else
+                if info.critical then
+                        table.insert(textParts, "(CRIT!)")
+                end
+
+                local mitigated = info.mitigated
+                if typeof(mitigated) == "number" and mitigated > 0 then
+                        table.insert(textParts, string.format("(-%d)", roundNumber(mitigated)))
+                end
+        end
+
+        local text = table.concat(textParts, " ")
+
+        local color
+        if info.buff then
+                color = Color3.fromRGB(200, 255, 120)
+        elseif info.missed then
+                color = Color3.fromRGB(180, 180, 180)
+        elseif info.critical then
+                color = Color3.fromRGB(255, 170, 60)
+        else
+                color = Color3.fromRGB(240, 240, 255)
+        end
+
+        local size = info.critical and 22 or 20
+        if info.buff then
+                size = 18
+        end
+
+        _G.EFFECTS.Billboard({
+                Where = monster,
+                Text = text,
+                Color = color,
+                Duration = 1.4,
+                FadeTime = 0.25,
+                Size = size,
+                Font = Enum.Font.GothamBold,
+                Outline = true,
+                OutlineColor = Color3.new(0, 0, 0),
+                Offset = Vector3.new(0, 3.5, 0),
+                RiseHeight = info.buff and 2.8 or 2.2,
+        })
 end
 
 function CombatManager.PlayStateSound(participant, state)
-	if not _G.EFFECTS or not _G.EFFECTS.PlaySound then
-		return
-	end
+        if not _G.EFFECTS or not _G.EFFECTS.PlaySound then
+                return
+        end
 
 	local monster = participant.instance
 	if not monster or not monster.Parent then
@@ -1091,10 +1166,12 @@ function CombatManager.ProcessParticipantState(participant, combatData, currentT
 	local stateDuration = currentTime - participant.stateStartTime
 
 	-- Billboard and sound effects for state transitions
-	if stateDuration < 0.1 then -- Only when state just started
-		CombatManager.ShowStateBillboard(participant, state)
-		CombatManager.PlayStateSound(participant, state)
-	end
+        if stateDuration < 0.1 then -- Only when state just started
+                if state ~= "CASTING" and state ~= "POSITIONING" and state ~= "REPOSITIONING" then
+                        CombatManager.ShowStateBillboard(participant, state)
+                end
+                CombatManager.PlayStateSound(participant, state)
+        end
 
 	if stateDuration > 10 then
 		print(string.format("[StateSafety]%s TIMEOUT, forcing DECIDING", participant.id))
@@ -1489,28 +1566,18 @@ function CombatManager.ExecuteDefend(participant, dur)
 	EnhancedMovement.LockMovement(me, true, t)
 	if _G.EFFECTS then _G.EFFECTS.PlaySound("Guard",{Where=me}) end
 
-	if _G.EFFECTS then
-		_G.EFFECTS.Billboard({
-			Where = me,
-			Text = "DEFEND",
-			Color = Color3.fromRGB(80, 200, 255),
-			Duration = 1.2,
-			Size = 18,
-			RiseHeight = 2
-		})
-		if _G.EFFECTS.AuraEffect then
-			_G.EFFECTS.AuraEffect({
-				Name = "DefendAura",
-				LocationParts = {me.PrimaryPart or me:FindFirstChildWhichIsA("BasePart")},
-				Color = ColorSequence.new({
-					ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 200, 255)),
-					ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 120, 255))
-				}),
-				Duration = t,
-				AuraReference = "Defend"
-			})
-		end
-	end
+        if _G.EFFECTS and _G.EFFECTS.EmitterEffect then
+                local root = me.PrimaryPart or me:FindFirstChildWhichIsA("BasePart")
+                if root then
+                        _G.EFFECTS.EmitterEffect({
+                                Name = "DefendShield",
+                                Position = root,
+                                Offset = CFrame.new(0, 0, -4),
+                                Duration = t,
+                                Weld = root
+                        })
+                end
+        end
 
 	-- === CORE: damage taken reduction based on Defense ===
 	local defense = me:GetAttribute("Defense") or 10
@@ -1775,88 +1842,119 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 		end)
 	end
 
-	if not isUtilityMove then
-		local outcome = CombatMath.ResolveHit(attStats, tgtStats, move)
-		if outcome.hit then
-			local dmg = CombatMath.ComputeDamage(attStats, tgtStats, move, outcome.crit)
-			local dr = target:GetAttribute("IncomingDR")
-			if dr and dr > 0 then
-				dmg = math.max(0, math.floor(dmg * (1 - math.clamp(dr, 0, 0.8)) + 0.5))
-			end
+        if not isUtilityMove then
+                local outcome = CombatMath.ResolveHit(attStats, tgtStats, move)
+                if outcome.hit then
+                        local baseDamage = math.max(0, roundNumber(CombatMath.ComputeDamage(attStats, tgtStats, move, outcome.crit)))
+                        local adjustedDamage = baseDamage
+                        local mitigatedByDR = 0
 
-			local residual, absorbed = StatusEffects.AbsorbWithShield(target, dmg)
-			if residual > 0 then
-				local humanoid = target:FindFirstChildOfClass("Humanoid")
-				if humanoid then
-					humanoid:TakeDamage(residual)
-					if targetParticipant then
-						targetParticipant.currentHp = humanoid.Health
-					end
-				end
+                        local dr = target:GetAttribute("IncomingDR")
+                        if dr and dr > 0 then
+                                local multiplier = 1 - math.clamp(dr, 0, 0.8)
+                                local afterDR = roundNumber(baseDamage * multiplier)
+                                mitigatedByDR = math.max(0, baseDamage - afterDR)
+                                adjustedDamage = math.max(0, afterDR)
+                        end
 
-				-- Show damage billboard
-				if _G.EFFECTS and _G.EFFECTS.Billboard then
-					_G.EFFECTS.Billboard({
-						Where = target,
-						Text = tostring(math.max(1, math.floor(residual))),
-						Color = outcome.crit and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 50, 50),
-						Duration = 1.2,
-						Size = outcome.crit and 25 or 20,
-						Offset = Vector3.new(0, 4, 0)
-					})
-				end
+                        local residual, absorbed = StatusEffects.AbsorbWithShield(target, adjustedDamage)
+                        local residualDamage = math.max(0, residual or 0)
+                        local residualDisplay = roundNumber(residualDamage)
+                        local absorbedDisplay = roundNumber(absorbed)
+                        local totalMitigated = math.max(0, mitigatedByDR + math.max(0, absorbedDisplay))
 
-				-- Play hit sound and effect
-				if _G.EFFECTS then
-					if outcome.crit then
-						_G.EFFECTS.PlaySound("CriticalHit", {Where = target, Volume = 0.6})
-						_G.EFFECTS.HitGlow({
-							Where = target,
-							Type = "Full",
-							FillColor = Color3.fromRGB(255, 200, 0),
-							OutlineColor = Color3.fromRGB(255, 100, 0),
-							GlowDuration = 0.8
-						})
-					else
-						_G.EFFECTS.PlaySound("Hit", {Where = target, Volume = 0.4, RandomPitch = true})
-						_G.EFFECTS.HitGlow({
-							Where = target,
-							Type = "Outline",
-							OutlineColor = Color3.fromRGB(255, 50, 50),
-							GlowDuration = 0.4
-						})
-					end
-				end
-			end
+                        if residualDamage > 0 then
+                                local humanoid = target:FindFirstChildOfClass("Humanoid")
+                                if humanoid then
+                                        humanoid:TakeDamage(residualDamage)
+                                        if targetParticipant then
+                                                targetParticipant.currentHp = humanoid.Health
+                                        end
+                                end
 
-			Bridge.PlayImpact(attacker, target, move.id)
-			CombatManager.ApplyMoveEffects(attacker, target, move)
-		else
-			-- Show miss effect
-			if _G.EFFECTS then
-				_G.EFFECTS.Billboard({
-					Where = target,
-					Text = "MISS",
-					Color = Color3.fromRGB(150, 150, 150),
-					Duration = 1.2,
-					Size = 18
-				})
-				_G.EFFECTS.PlaySound("Miss", {Where = target, Volume = 0.3})
-			end
-		end
-	else
-		CombatManager.ApplyMoveEffects(attacker, target, move)
-		if _G.EFFECTS and _G.EFFECTS.Billboard then
-			_G.EFFECTS.Billboard({
-				Where = attacker,
-				Text = move.name or "BUFF",
-				Color = Color3.fromRGB(200, 255, 120),
-				Duration = 1.2,
-				Size = 18,
-				RiseHeight = 2.5
-			})
-		end
-	end
+                                if _G.EFFECTS then
+                                        if outcome.crit then
+                                                _G.EFFECTS.PlaySound("CriticalHit", {Where = target, Volume = 0.6})
+                                                _G.EFFECTS.HitGlow({
+                                                        Where = target,
+                                                        Type = "Full",
+                                                        FillColor = Color3.fromRGB(255, 200, 0),
+                                                        OutlineColor = Color3.fromRGB(255, 100, 0),
+                                                        GlowDuration = 0.8
+                                                })
+                                        else
+                                                _G.EFFECTS.PlaySound("Hit", {Where = target, Volume = 0.4, RandomPitch = true})
+                                                _G.EFFECTS.HitGlow({
+                                                        Where = target,
+                                                        Type = "Outline",
+                                                        OutlineColor = Color3.fromRGB(255, 50, 50),
+                                                        GlowDuration = 0.4
+                                                })
+                                        end
+                                end
+                        end
+
+                        if _G.EFFECTS and _G.EFFECTS.Billboard then
+                                local damageText
+                                if residualDisplay > 0 then
+                                        damageText = tostring(math.max(1, residualDisplay))
+                                elseif totalMitigated > 0 then
+                                        damageText = "BLOCKED"
+                                else
+                                        damageText = "0"
+                                end
+
+                                if outcome.crit then
+                                        damageText = "CRIT " .. damageText
+                                end
+
+                                if totalMitigated > 0 then
+                                        damageText ..= string.format(" (-%d)", totalMitigated)
+                                end
+
+                                local color
+                                if residualDisplay > 0 then
+                                        color = outcome.crit and Color3.fromRGB(255, 100, 0) or Color3.fromRGB(255, 50, 50)
+                                else
+                                        color = Color3.fromRGB(160, 200, 255)
+                                end
+
+                                local size = outcome.crit and 25 or 20
+
+                                _G.EFFECTS.Billboard({
+                                        Where = target,
+                                        Text = damageText,
+                                        Color = color,
+                                        Duration = 1.2,
+                                        Size = size,
+                                        Offset = Vector3.new(0, 4, 0)
+                                })
+                        end
+
+                        Bridge.PlayImpact(attacker, target, move.id)
+                        CombatManager.ApplyMoveEffects(attacker, target, move)
+                        CombatManager.ShowMoveNotification(participant, move, {
+                                critical = outcome.crit,
+                                mitigated = totalMitigated,
+                        })
+                else
+                        -- Show miss effect
+                        if _G.EFFECTS then
+                                _G.EFFECTS.Billboard({
+                                        Where = target,
+                                        Text = "MISS",
+                                        Color = Color3.fromRGB(150, 150, 150),
+                                        Duration = 1.2,
+                                        Size = 18
+                                })
+                                _G.EFFECTS.PlaySound("Miss", {Where = target, Volume = 0.3})
+                        end
+                        CombatManager.ShowMoveNotification(participant, move, { missed = true })
+                end
+        else
+                CombatManager.ApplyMoveEffects(attacker, target, move)
+                CombatManager.ShowMoveNotification(participant, move, { buff = true })
+        end
 
 	-- Set cooldown
 	participant.cooldowns[move.id] = os.clock() + (move.cooldown or 0)
