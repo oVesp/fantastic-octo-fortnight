@@ -54,6 +54,55 @@ local activeCombats = {}
 local combatParticipants = {}
 local combatLoopConnection = nil
 local onCombatEndCallbacks = {}
+
+function CombatManager.GetCombatIdForInstance(instance)
+        return combatParticipants[instance]
+end
+
+function CombatManager.IsMonsterInCombat(instance)
+        if typeof(instance) ~= "Instance" then
+                return false
+        end
+        return combatParticipants[instance] ~= nil
+end
+
+function CombatManager.IsPlayerInCombat(playerOrUserId)
+        local userId
+        local player
+
+        if typeof(playerOrUserId) == "number" then
+                userId = playerOrUserId
+        elseif typeof(playerOrUserId) == "string" then
+                userId = tonumber(playerOrUserId)
+        elseif typeof(playerOrUserId) == "Instance" and playerOrUserId:IsA("Player") then
+                player = playerOrUserId
+                userId = player.UserId
+        end
+
+        if not userId then
+                return false
+        end
+
+        player = player or Players:GetPlayerByUserId(userId)
+
+        local monsterGenerator = _G and _G.MONSTERGENERATOR
+        if monsterGenerator and typeof(monsterGenerator.GetPlayerMonster) == "function" then
+                local monster = monsterGenerator.GetPlayerMonster(player or userId)
+                if monster and monster.Parent then
+                        return CombatManager.IsMonsterInCombat(monster)
+                end
+        end
+
+        if player and player.Character then
+                for model, combatId in pairs(combatParticipants) do
+                        if model:GetAttribute("OwnerId") == userId or model:GetAttribute("Userid") == userId then
+                                return combatId ~= nil
+                        end
+                end
+        end
+
+        return false
+end
 local DEFAULT_ATTACK = {
         id = "DefaultAttack",
         name = "Default Attack",
@@ -964,10 +1013,22 @@ function CombatManager.EndCombat(combatId, results)
 	activeCombats[combatId] = nil
 
 	-- Call callback
-	if onCombatEndCallbacks[combatId] then
-		pcall(onCombatEndCallbacks[combatId], combatId, combatData, winningTeam)
-		onCombatEndCallbacks[combatId] = nil
-	end
+        local callback = onCombatEndCallbacks[combatId]
+        if callback then
+                local resultsPayload = {
+                        combatId = combatId,
+                        combatData = combatData,
+                        winningTeam = winningTeam,
+                        winner = winningInstance,
+                }
+
+                local ok, err = pcall(callback, resultsPayload)
+                if not ok then
+                        warn("[CombatManager] Combat callback failed:", err)
+                end
+
+                onCombatEndCallbacks[combatId] = nil
+        end
 end
 
 -- State-Based Combat Loop

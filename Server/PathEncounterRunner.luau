@@ -73,9 +73,10 @@ function PathEncounterRunner.SpawnMonster(startPart, endPart)
 		return nil
 	end
 
-	local options = {
-		level = math.random(CONFIG.LEVEL_RANGE[1], CONFIG.LEVEL_RANGE[2])
-	}
+        local options = {
+                level = math.random(CONFIG.LEVEL_RANGE[1], CONFIG.LEVEL_RANGE[2]),
+                isNPC = true,
+        }
 
 	-- If any monster flag is enabled, don't force a specific race
 	if not CONFIG.ENABLE_ANY_MONSTER then
@@ -413,39 +414,56 @@ function PathEncounterRunner.HandlePromptTriggered(player, monsterInfo)
 	}
 
 	-- Start combat using the exact same parameters as EncounterManager
-	local combatId = _G.COMBATMANAGER.StartCombat(
-		{playerMonster, monsterInfo.model},
-		opts,
-		function(results)
-			PathEncounterRunner.HandleCombatEnd(results, monsterInfo, player)
-		end
-	)
+        local combatId = _G.COMBATMANAGER.StartCombat(
+                {playerMonster, monsterInfo.model},
+                opts,
+                function(results)
+                        PathEncounterRunner.HandleCombatEnd(results, monsterInfo, player, playerMonster)
+                end
+        )
 
 	-- Set combat state
 	_G.STATES:SetState(monsterInfo.model, "InCombat")
 end
 
-function PathEncounterRunner.HandleCombatEnd(results, monsterInfo, player)
-	print("[PathEncounterRunner] Combat ended for: " .. (monsterInfo.model and monsterInfo.model.Name or "Unknown"))
+function PathEncounterRunner.HandleCombatEnd(results, monsterInfo, player, playerMonster)
+        print("[PathEncounterRunner] Combat ended for: " .. (monsterInfo.model and monsterInfo.model.Name or "Unknown"))
 
-	-- Remove player from combat tracking
-	playersInCombat[player.UserId] = nil
+        -- Remove player from combat tracking
+        playersInCombat[player.UserId] = nil
 
 	if not monsterInfo.model or not monsterInfo.model.Parent then
 		return
 	end
 
-	local playerWon = false
-	local enemyMonster = monsterInfo.model
+        local playerWon = false
+        local enemyMonster = monsterInfo.model
 
-	if results and results.winner then
-		local winnerOwnerId = results.winner:GetAttribute("OwnerId")
-		playerWon = (winnerOwnerId and tonumber(winnerOwnerId) == player.UserId)
-	end
+        if results and results.winner then
+                playerWon = (playerMonster and results.winner == playerMonster)
+                if not playerWon then
+                        local winnerOwnerId = results.winner:GetAttribute("OwnerId")
+                        playerWon = (winnerOwnerId and tonumber(winnerOwnerId) == player.UserId)
+                end
+        elseif results and results.winningTeam and playerMonster and results.combatData then
+                local participants = results.combatData.participants
+                if typeof(participants) == "table" then
+                        local playerTeam
+                        for _, participant in pairs(participants) do
+                                if participant.instance == playerMonster then
+                                        playerTeam = participant.team
+                                        break
+                                end
+                        end
+                        if playerTeam then
+                                playerWon = playerTeam == results.winningTeam
+                        end
+                end
+        end
 
-	-- Check if enemy monster is actually dead (health-based check)
-	local humanoid = enemyMonster:FindFirstChildOfClass("Humanoid")
-	local isEnemyDead = not humanoid or humanoid.Health <= 0
+        -- Check if enemy monster is actually dead (health-based check)
+        local humanoid = enemyMonster:FindFirstChildOfClass("Humanoid")
+        local isEnemyDead = not humanoid or humanoid.Health <= 0
 
 	if playerWon or isEnemyDead then
 		-- Player won OR enemy died (double-check)

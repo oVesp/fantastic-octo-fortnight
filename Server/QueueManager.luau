@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local QueueDefinitions = require(ReplicatedStorage.Modules.QueueDefinitions)
+local Leveling = require(ReplicatedStorage.Modules:WaitForChild("Leveling"))
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
@@ -30,6 +31,7 @@ local heartbeatAccumulator = 0
 
 local STATES = _G.STATES
 local COMBATMANAGER = _G.COMBATMANAGER
+local MAX_LEVEL = Leveling and Leveling.MaxLevel or 50
 
 local function shallowCopy(source)
 	local result = {}
@@ -57,17 +59,18 @@ local function buildRuntimeQueue(queueId)
 		fillWithBotsAfterSeconds = definition.fillWithBotsAfterSeconds,
 	}
 
-	runtimeQueues[queueId] = {
-		id = queueId,
-		definition = definition,
-		settings = settings,
-		players = {},
-		countdownActive = false,
-		startTime = 0,
-		waitingStartTime = 0,
-		lastPlayerCount = nil,
-		lastCountdownTick = nil,
-	}
+        runtimeQueues[queueId] = {
+                id = queueId,
+                definition = definition,
+                settings = settings,
+                players = {},
+                countdownActive = false,
+                startTime = 0,
+                waitingStartTime = 0,
+                lastPlayerCount = nil,
+                lastCountdownTick = nil,
+                levelStats = nil,
+        }
 
 	return runtimeQueues[queueId]
 end
@@ -126,10 +129,10 @@ local function releaseSpot(spot)
 end
 
 local function getPlayerMonster(player)
-	if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonster then
-		local monster = _G.MONSTERGENERATOR.GetPlayerMonster(player.UserId)
-		if monster and monster.Parent then
-			return monster
+        if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonster then
+                local monster = _G.MONSTERGENERATOR.GetPlayerMonster(player)
+                if monster and monster.Parent then
+                        return monster
 		end
 	end
 
@@ -139,34 +142,119 @@ local function getPlayerMonster(player)
 		end
 	end
 
-	return nil
+        return nil
 end
 
-local function spawnNPC(name)
-	if not _G.MONSTERGENERATOR or not _G.MONSTERGENERATOR.BuildMonster then
-		warn("[QueueManager] MONSTERGENERATOR unavailable while spawning bots.")
-		return nil
-	end
+local function normalizeLevel(value)
+        if typeof(value) ~= "number" then
+                return nil
+        end
+        value = math.floor(value)
+        if value < 1 then
+                value = 1
+        elseif value > MAX_LEVEL then
+                value = MAX_LEVEL
+        end
+        return value
+end
 
-	local success, result = pcall(function()
-		return _G.MONSTERGENERATOR.BuildMonster(nil, nil, { force = true })
-	end)
+local function applyLevelSample(queue, level)
+        local normalized = normalizeLevel(level)
+        if not normalized then
+                return
+        end
 
-	if not success or not result then
-		warn("[QueueManager] Failed to build bot monster:", tostring(result))
-		return nil
-	end
+        if not queue.levelStats then
+                queue.levelStats = {min = normalized, max = normalized}
+                return
+        end
 
-	local instance = result
-	if name then
-		instance.Name = name
-		instance:SetAttribute("Name", name)
-	end
-	instance:SetAttribute("QueueBot", true)
+        if normalized < queue.levelStats.min then
+                queue.levelStats.min = normalized
+        end
+        if normalized > queue.levelStats.max then
+                queue.levelStats.max = normalized
+        end
+end
 
-	if STATES then
-		STATES:SetState(instance, "Idle")
-	end
+local function recalcQueueLevelStats(queue)
+        local minLevel, maxLevel
+        for _, player in ipairs(queue.players) do
+                local monster = getPlayerMonster(player)
+                if monster and monster.Parent then
+                        local level = normalizeLevel(monster:GetAttribute("Level"))
+                        if level then
+                                minLevel = minLevel and math.min(minLevel, level) or level
+                                maxLevel = maxLevel and math.max(maxLevel, level) or level
+                        end
+                end
+        end
+
+        if minLevel then
+                queue.levelStats = {min = minLevel, max = maxLevel}
+        else
+                queue.levelStats = nil
+        end
+end
+
+local function getBotLevelRange(queue)
+        local stats = queue.levelStats
+        if not stats then
+                return {min = 1, max = math.min(5, MAX_LEVEL)}
+        end
+
+        local buffer = 2
+        local minLevel = math.max(1, stats.min - buffer)
+        local maxLevel = math.min(MAX_LEVEL, stats.max + buffer)
+        if maxLevel < minLevel then
+                maxLevel = minLevel
+        end
+
+        return {min = minLevel, max = maxLevel}
+end
+
+local function spawnNPC(name, levelRange)
+        if not _G.MONSTERGENERATOR or not _G.MONSTERGENERATOR.BuildMonster then
+                warn("[QueueManager] MONSTERGENERATOR unavailable while spawning bots.")
+                return nil
+        end
+
+        local buildOptions = { isNPC = true }
+        if levelRange and typeof(levelRange) == "table" then
+                local minLevel = tonumber(levelRange.min or levelRange[1])
+                local maxLevel = tonumber(levelRange.max or levelRange[2])
+                if minLevel and maxLevel then
+                        if minLevel > maxLevel then
+                                minLevel, maxLevel = maxLevel, minLevel
+                        end
+                        buildOptions.levelRange = {min = minLevel, max = maxLevel}
+                end
+        end
+
+        local success, monsterModel = pcall(function()
+                return _G.MONSTERGENERATOR.BuildMonster(nil, nil, buildOptions)
+        end)
+
+        if not success or not monsterModel then
+                warn("[QueueManager] Failed to build bot monster:", tostring(monsterModel))
+                return nil
+        end
+
+        local instance = monsterModel
+        if name then
+                instance.Name = name
+                instance:SetAttribute("Name", name)
+        end
+        instance:SetAttribute("QueueBot", true)
+
+        if levelRange and typeof(levelRange) == "table" then
+                instance:SetAttribute("BotLevelMin", levelRange.min)
+                instance:SetAttribute("BotLevelMax", levelRange.max)
+        end
+
+        if STATES then
+                STATES:SetState(instance, "Idle")
+        end
 
 	return instance
 end
@@ -322,12 +410,13 @@ local function startMatch(queue, bots)
 		end
 	end
 
-	queue.players = {}
-	queue.countdownActive = false
-	queue.startTime = 0
-	queue.waitingStartTime = 0
-	queue.lastPlayerCount = nil
-	queue.lastCountdownTick = nil
+        queue.players = {}
+        queue.countdownActive = false
+        queue.startTime = 0
+        queue.waitingStartTime = 0
+        queue.lastPlayerCount = nil
+        queue.lastCountdownTick = nil
+        queue.levelStats = nil
 
 	for _, player in ipairs(playersSnapshot) do
 		playerMembership[player] = nil
@@ -445,20 +534,31 @@ function QueueManager.Join(player, queueId)
 		QueueManager.Leave(player)
 	end
 
-	if #queue.players >= queue.settings.maxPlayers then
-		return false, "Queue is full."
-	end
+        if #queue.players >= queue.settings.maxPlayers then
+                return false, "Queue is full."
+        end
 
-	if not getPlayerMonster(player) then
-		return false, "You need a monster before joining."
-	end
+        local monster = getPlayerMonster(player)
+        if not (monster and monster.Parent) then
+                return false, "You need a monster before joining."
+        end
 
-	table.insert(queue.players, player)
-	playerMembership[player] = queue.id
+        COMBATMANAGER = COMBATMANAGER or _G.COMBATMANAGER
+        if COMBATMANAGER and typeof(COMBATMANAGER.IsMonsterInCombat) == "function" then
+                if COMBATMANAGER.IsMonsterInCombat(monster) or COMBATMANAGER.IsPlayerInCombat(player) then
+                        return false, "Finish your current combat before queuing."
+                end
+        end
 
-	if #queue.players == 1 then
-		queue.waitingStartTime = os.clock()
-	end
+        table.insert(queue.players, player)
+        playerMembership[player] = queue.id
+
+        local monsterLevel = monster:GetAttribute("Level")
+        applyLevelSample(queue, monsterLevel or 1)
+
+        if #queue.players == 1 then
+                queue.waitingStartTime = os.clock()
+        end
 
 	local joinPayload = {
 		status = "InQueue",
@@ -485,13 +585,15 @@ function QueueManager.Leave(player)
 		return false, "Player not queued."
 	end
 
-	table.remove(queue.players, index)
-	playerMembership[player] = nil
+        table.remove(queue.players, index)
+        playerMembership[player] = nil
 
-	if #queue.players == 0 then
-		queue.waitingStartTime = 0
-		queue.countdownActive = false
-		queue.startTime = 0
+        recalcQueueLevelStats(queue)
+
+        if #queue.players == 0 then
+                queue.waitingStartTime = 0
+                queue.countdownActive = false
+                queue.startTime = 0
 		queue.lastPlayerCount = nil
 		queue.lastCountdownTick = nil
 	elseif queue.countdownActive and #queue.players < queue.settings.minPlayers then
@@ -550,15 +652,21 @@ function QueueManager.GetQueueSnapshot()
 end
 
 local function spawnBots(queue)
-	local bots = {}
-	local needed = queue.settings.maxPlayers - #queue.players
-	for index = 1, needed do
-		local bot = spawnNPC("QueueBot_" .. tostring(index))
-		if bot then
-			table.insert(bots, bot)
-		end
-	end
-	return bots
+        local bots = {}
+        local needed = queue.settings.maxPlayers - #queue.players
+        if needed <= 0 then
+                return bots
+        end
+
+        local levelRange = getBotLevelRange(queue)
+
+        for index = 1, needed do
+                local bot = spawnNPC("QueueBot_" .. tostring(index), levelRange)
+                if bot then
+                        table.insert(bots, bot)
+                end
+        end
+        return bots
 end
 
 function QueueManager.update()

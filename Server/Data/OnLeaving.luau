@@ -76,47 +76,50 @@ module[#module + 1] = function(player, dataStore)
         end
 
         local store = dataStore.Value
-        if typeof(store) ~= "table" then
-                return
-        end
-
-        local monster = store.Monster
-        if typeof(monster) ~= "table" then
-                return
-        end
+        local monster = typeof(store) == "table" and store.Monster or nil
 
         local entry = safeGetMonsterEntry(player)
         local model = resolveActiveModel(player, entry)
-        if not model then
-                return
-        end
 
-        local targets = collectStatTargets(monster, entry)
-        if #targets == 0 then
-                return
-        end
+        if typeof(monster) == "table" and model then
+                local targets = collectStatTargets(monster, entry)
 
-        local didMutate = false
+                if #targets > 0 then
+                        local didMutate = false
 
-        for _, mapping in ipairs(trackedStats) do
-                local attributeValue = model:GetAttribute(mapping.attribute)
-                if attributeValue ~= nil then
-                        for _, target in ipairs(targets) do
-                                for _, key in ipairs(mapping.keys) do
-                                        if target[key] == nil or target[key] ~= attributeValue then
-                                                target[key] = attributeValue
-                                                didMutate = true
+                        for _, mapping in ipairs(trackedStats) do
+                                local attributeValue = model:GetAttribute(mapping.attribute)
+                                if attributeValue ~= nil then
+                                        for _, target in ipairs(targets) do
+                                                for _, key in ipairs(mapping.keys) do
+                                                        if target[key] == nil or target[key] ~= attributeValue then
+                                                                target[key] = attributeValue
+                                                                didMutate = true
+                                                        end
+                                                end
                                         end
+                                end
+                        end
+
+                        if didMutate then
+                                local result = dataStore:Save()
+                                if result ~= "Saved" then
+                                        warn("Failed to save monster stat sync for", player, result)
                                 end
                         end
                 end
         end
 
-        if didMutate then
-                local result = dataStore:Save()
-                if result ~= "Saved" then
-                        warn("Failed to save monster stat sync for", player, result)
-                end
+        local monsterGenerator = _G and _G.MONSTERGENERATOR
+        if monsterGenerator and typeof(monsterGenerator.UnregisterPlayerMonster) == "function" then
+                monsterGenerator.UnregisterPlayerMonster(player)
+        end
+
+        local toDestroy = model or (entry and entry.Model)
+        if toDestroy and toDestroy.Parent then
+                pcall(function()
+                        toDestroy:Destroy()
+                end)
         end
 end
 
