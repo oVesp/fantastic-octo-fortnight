@@ -207,23 +207,32 @@ Element = "None"
 Leveling.RefreshBaseline(data)
 data.LastEvolutionAttemptLevel = 0
 
-	local worked = {}
-	if ownerId then
-		print(data)
-		local playerData = _G.DATA:Get(ownerId)
+        local worked = {}
+        if ownerId then
+                print(data)
+                local playerData = _G.DATA:Get(ownerId)
 
-		for key, value in (data) do
-			table.insert(worked, key)
-			print(worked)
+                for key, value in (data) do
+                        table.insert(worked, key)
+                        print(worked)
 
-			print(key, typeof(key), value, typeof(value))
+                        print(key, typeof(key), value, typeof(value))
 
-			playerData.Monster[key] = value
-		end
-		for key, value in pairs(data.Stats) do
-			playerData.Monster.Stats[key] = value
-		end
-	end
+                        if key == "Stats" then
+                                playerData.Monster.Stats = playerData.Monster.Stats or {}
+                                for statKey, statValue in pairs(value) do
+                                        playerData.Monster.Stats[statKey] = statValue
+                                end
+                        elseif key == "Moves" then
+                                playerData.Monster.Moves = playerData.Monster.Moves or {}
+                                for index, move in ipairs(value) do
+                                        playerData.Monster.Moves[index] = move
+                                end
+                        else
+                                playerData.Monster[key] = value
+                        end
+                end
+        end
 
 	return data
 end
