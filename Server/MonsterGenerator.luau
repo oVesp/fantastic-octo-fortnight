@@ -72,7 +72,7 @@ local function applyMultipliers(stats, mult)
 		Luck = {"Luck", "LCK"},
 	}
 
-	for statName, aliases in (map) do
+        for statName, aliases in pairs(map) do
 		local long, short = aliases[1], aliases[2]
 		local multiplier = mult[statName] or 1
 		if multiplier ~= 1 then
@@ -132,10 +132,34 @@ end
 
 -- Modified RollMonster function with level support
 function module.RollMonster(ownerId, isNPC, options)
-	options = options or {}
-	local level = options.level or 1
-	local stage = options.stage or getStageFromLevel(level)
-	local forceRace = options.race -- Allow forcing specific race
+        options = options or {}
+
+        local level = options.level
+        if level == nil then
+                local levelRange = options.levelRange
+                if typeof(levelRange) == "table" then
+                        local minLevel = tonumber(levelRange.min or levelRange[1]) or 1
+                        local maxLevel = tonumber(levelRange.max or levelRange[2]) or minLevel
+                        if minLevel > maxLevel then
+                                minLevel, maxLevel = maxLevel, minLevel
+                        end
+                        minLevel = math.clamp(math.floor(minLevel), 1, Leveling.MaxLevel)
+                        maxLevel = math.clamp(math.floor(maxLevel), minLevel, Leveling.MaxLevel)
+                        level = math.random(minLevel, maxLevel)
+                end
+        end
+        level = math.clamp(math.floor(level or 1), 1, Leveling.MaxLevel)
+
+        local stage = options.stage or getStageFromLevel(level)
+        local forceRace = options.race -- Allow forcing specific race
+
+        if options.isNPC == true then
+                isNPC = true
+        elseif options.isNPC == false then
+                isNPC = false
+        elseif isNPC == nil then
+                isNPC = ownerId == nil
+        end
 
 	local pool
 	if forceRace and Races:Exists(forceRace) then
@@ -179,91 +203,103 @@ function module.RollMonster(ownerId, isNPC, options)
 		scaledStats = applyMultipliers(scaledStats, personalityData.trainingMultipliers)
 	end
 
-	local name = _G.UTILS.nameGenerator()
-local data = {
-id = HttpService:GenerateGUID(false),
-Name = name,
-Race = race,
-Stage = stage,
-Level = level,
-Experience = Leveling.GetExperienceForLevel(level),
-BaseRaceFamily = family,
-OwnerId = ownerId,
-Personality = personalityName,  -- Just store the name
-Stats = scaledStats,
-Moves = moves,
-History = {race},
-IsNPC = isNPC or false,
-GeneratedWithLevel = level,
-Appearance = {},
-Age = 0,
-Bond = 0,
-Wins = 0,
-SessionTime = 0,
-CareMistakes = 0,
-Element = "None"
-}
+        local name = _G.UTILS.nameGenerator()
+        local data = {
+                id = HttpService:GenerateGUID(false),
+                Name = name,
+                Race = race,
+                Stage = stage,
+                Level = level,
+                Experience = Leveling.GetExperienceForLevel(level),
+                BaseRaceFamily = family,
+                OwnerId = ownerId,
+                Personality = personalityName, -- Just store the name
+                Stats = scaledStats,
+                Moves = moves,
+                History = {race},
+                IsNPC = isNPC or false,
+                GeneratedWithLevel = level,
+                Appearance = {},
+                Age = 0,
+                Bond = 0,
+                Wins = 0,
+                SessionTime = 0,
+                CareMistakes = 0,
+                Element = "None",
+        }
 
-Leveling.RefreshBaseline(data)
-data.LastEvolutionAttemptLevel = 0
+        Leveling.RefreshBaseline(data)
+        data.LastEvolutionAttemptLevel = 0
 
-        local worked = {}
         if ownerId then
-                print(data)
-                local playerData = _G.DATA:Get(ownerId)
+                local ok, playerData = pcall(function()
+                        return _G.DATA and _G.DATA:Get(ownerId)
+                end)
 
-                for key, value in (data) do
-                        table.insert(worked, key)
-                        print(worked)
+                if ok and typeof(playerData) == "table" then
+                        playerData.Monster = playerData.Monster or {}
+                        playerData.Monster.Stats = playerData.Monster.Stats or {}
+                        playerData.Monster.Moves = playerData.Monster.Moves or {}
 
-                        print(key, typeof(key), value, typeof(value))
-
-                        if key == "Stats" then
-                                playerData.Monster.Stats = playerData.Monster.Stats or {}
-                                for statKey, statValue in pairs(value) do
-                                        playerData.Monster.Stats[statKey] = statValue
+                        for key, value in pairs(data) do
+                                if key == "Stats" then
+                                        for statKey, statValue in pairs(value) do
+                                                playerData.Monster.Stats[statKey] = statValue
+                                        end
+                                elseif key == "Moves" then
+                                        for index, move in ipairs(value) do
+                                                playerData.Monster.Moves[index] = move
+                                        end
+                                else
+                                        playerData.Monster[key] = value
                                 end
-                        elseif key == "Moves" then
-                                playerData.Monster.Moves = playerData.Monster.Moves or {}
-                                for index, move in ipairs(value) do
-                                        playerData.Monster.Moves[index] = move
-                                end
-                        else
-                                playerData.Monster[key] = value
                         end
+
+                        playerData.Level = data.Level
+                        playerData.Experience = data.Experience
                 end
         end
 
-	return data
+        return data
 end
 
 -- Rest of the MonsterGenerator module remains the same...
 local ownerToMonster = setmetatable({}, {__mode = "v"})
 
 local function _tagOwned(monsterModel, player)
-	if not (monsterModel and player) then return end
-	monsterModel:SetAttribute("Userid", player.UserId)
+        if not (monsterModel and player) then return end
+        monsterModel:SetAttribute("OwnerId", player.UserId)
+        monsterModel:SetAttribute("Userid", player.UserId)
 end
 
 local function _findExistingOwned(userId)
-	local reg = ownerToMonster[userId]
-	if reg and reg.Parent then return reg end
+        local reg = ownerToMonster[userId]
+        if reg and reg.Parent then return reg end
 
-	for _, m in ipairs(workspace:GetChildren()) do
-		if m:IsA("Model") and m:GetAttribute("UserId") == userId then
-			return m
-		end
-	end
-	return nil
+        for _, m in ipairs(workspace:GetChildren()) do
+                if m:IsA("Model") then
+                        local attrOwnerId = m:GetAttribute("OwnerId")
+                                or m:GetAttribute("UserId")
+                                or m:GetAttribute("Userid")
+                        if attrOwnerId == userId then
+                                return m
+                        end
+                end
+        end
+        return nil
 end
 
 function module.BuildMonster(monsterData, ownerId, options)
-	
-	options = options or {}
-	monsterData = monsterData or module.RollMonster(ownerId, nil, options)
 
-	local isPlayerOwned = ownerId ~= nil
-	local uid = isPlayerOwned and tostring(ownerId) or nil
+        options = options or {}
+        if ownerId == nil and options.isNPC == nil then
+                options.isNPC = true
+        end
+
+        monsterData = monsterData or module.RollMonster(ownerId, options.isNPC, options)
+
+        local isPlayerOwned = ownerId ~= nil
+        local uid = isPlayerOwned and tostring(ownerId) or nil
 
 	if isPlayerOwned then
 		local existing = module.PlayerMonsters[uid]
@@ -295,21 +331,21 @@ function module.BuildMonster(monsterData, ownerId, options)
 	end
 
 	local stats = monsterData.Stats or {}
-	monsterModel:SetAttribute("Hp", stats.Hp or 100)
-	monsterModel:SetAttribute("MP", stats.Mp or 100)
-	monsterModel:SetAttribute("MaxMP", stats.Mp or 100)
-monsterModel:SetAttribute("Strength", stats.Strength or stats.STR or 10)
-monsterModel:SetAttribute("Defense", stats.Defense or stats.DEF or 10)
-monsterModel:SetAttribute("Skill", stats.Skill or stats.SKL or 10)
-monsterModel:SetAttribute("Speed", stats.Speed or stats.SPD or 10)
-monsterModel:SetAttribute("Intelligence", stats.Intelligence or stats.INT or 10)
-monsterModel:SetAttribute("Luck", stats.Luck or stats.LCK or 10)
-monsterModel:SetAttribute("Name", monsterData.Name or monsterData.Race)
-monsterModel:SetAttribute("Race", monsterData.Race)
-monsterModel:SetAttribute("Personality", tostring(monsterData.Personality))
-monsterModel:SetAttribute("Stage", monsterData.Stage)
-monsterModel:SetAttribute("Level", monsterData.Level or 1) -- Add level attribute
-monsterModel:SetAttribute("Experience", monsterData.Experience or 0)
+        monsterModel:SetAttribute("Hp", stats.Hp or 100)
+        monsterModel:SetAttribute("MP", stats.Mp or 100)
+        monsterModel:SetAttribute("MaxMP", stats.Mp or 100)
+        monsterModel:SetAttribute("Strength", stats.Strength or stats.STR or 10)
+        monsterModel:SetAttribute("Defense", stats.Defense or stats.DEF or 10)
+        monsterModel:SetAttribute("Skill", stats.Skill or stats.SKL or 10)
+        monsterModel:SetAttribute("Speed", stats.Speed or stats.SPD or 10)
+        monsterModel:SetAttribute("Intelligence", stats.Intelligence or stats.INT or 10)
+        monsterModel:SetAttribute("Luck", stats.Luck or stats.LCK or 10)
+        monsterModel:SetAttribute("Name", monsterData.Name or monsterData.Race)
+        monsterModel:SetAttribute("Race", monsterData.Race)
+        monsterModel:SetAttribute("Personality", tostring(monsterData.Personality))
+        monsterModel:SetAttribute("Stage", monsterData.Stage)
+        monsterModel:SetAttribute("Level", monsterData.Level or 1)
+        monsterModel:SetAttribute("Experience", monsterData.Experience or 0)
 
 Leveling.SyncModel(monsterData, monsterModel)
 
@@ -333,7 +369,7 @@ Leveling.SyncModel(monsterData, monsterModel)
 
         if monsterData.Moves then
                 local moveCount = 0
-                for i, moveInfo in (monsterData.Moves) do
+                for i, moveInfo in ipairs(monsterData.Moves) do
                         local moveId: string? = nil
                         if typeof(moveInfo) == "table" then
                                 moveId = moveInfo.id or (moveInfo.move and moveInfo.move.id)
@@ -363,10 +399,13 @@ Leveling.SyncModel(monsterData, monsterModel)
 	_G.EFFECTS.EmitterEffect({Name = "Atomic2", Position = monsterModel.PrimaryPart, Duration = 1, Weld = monsterModel.PrimaryPart })
 
 	
-	if ownerId then
-		monsterModel:PivotTo(Players:GetPlayerByUserId(ownerId).Character.HumanoidRootPart.CFrame * CFrame.new(5,0,0))
-		--_G.EFFECTS.EmitterEffect({Name = "Atomic2", Position = monsterModel.PrimaryPart, Duration = 3, Weld = monsterModel.PrimaryPart })
-	end
+        if ownerId then
+                local player = Players:GetPlayerByUserId(ownerId)
+                if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        monsterModel:PivotTo(player.Character.HumanoidRootPart.CFrame * CFrame.new(5, 0, 0))
+                end
+                --_G.EFFECTS.EmitterEffect({Name = "Atomic2", Position = monsterModel.PrimaryPart, Duration = 3, Weld = monsterModel.PrimaryPart })
+        end
 	return monsterModel, monsterData
 end
 
@@ -376,47 +415,125 @@ function module.GetPlayerMonsterData(playerId)
 	return module.PlayerMonsters[tostring(playerId)]
 end
 
-function module.GetPlayerMonster(player)
-	if not player then return nil end
-	local m = ownerToMonster[player]
-	if m and m.Parent then return m end
-	return _findExistingOwned(player)
+function module.GetPlayerMonster(target)
+        if not target then return nil end
+
+        local userId
+        local player
+
+        if typeof(target) == "number" then
+                userId = target
+                player = Players:GetPlayerByUserId(userId)
+        elseif typeof(target) == "string" then
+                userId = tonumber(target)
+                if userId then
+                        player = Players:GetPlayerByUserId(userId)
+                end
+        elseif typeof(target) == "Instance" and target:IsA("Player") then
+                player = target
+                userId = player.UserId
+        else
+                return nil
+        end
+
+        if player then
+                local tracked = ownerToMonster[player]
+                if tracked and tracked.Parent then
+                        return tracked
+                end
+        end
+
+        if userId then
+                local trackedById = ownerToMonster[userId]
+                if trackedById and trackedById.Parent then
+                        return trackedById
+                end
+                return _findExistingOwned(userId)
+        end
+
+        return nil
 end
 
 function module.RegisterPlayerMonster(playerId, monsterModel, monsterData)
-	if not module.PlayerMonsters then
-		module.PlayerMonsters = {}
-	end
-	module.PlayerMonsters[tostring(playerId)] = {Model = monsterModel, Data = monsterData}
-	print("Registered player monster for ID: " .. tostring(playerId) .. " - " .. monsterModel.Name)
+        if not module.PlayerMonsters then
+                module.PlayerMonsters = {}
+        end
+
+        local playerIdStr = tostring(playerId)
+        module.PlayerMonsters[playerIdStr] = {Model = monsterModel, Data = monsterData}
+
+        if typeof(playerId) == "number" then
+                ownerToMonster[playerId] = monsterModel
+                local player = Players:GetPlayerByUserId(playerId)
+                if player then
+                        ownerToMonster[player] = monsterModel
+                        _tagOwned(monsterModel, player)
+                end
+        elseif typeof(playerId) == "string" then
+                local numericId = tonumber(playerId)
+                if numericId then
+                        ownerToMonster[numericId] = monsterModel
+                        local player = Players:GetPlayerByUserId(numericId)
+                        if player then
+                                ownerToMonster[player] = monsterModel
+                                _tagOwned(monsterModel, player)
+                        end
+                end
+        elseif typeof(playerId) == "Instance" and playerId:IsA("Player") then
+                ownerToMonster[playerId] = monsterModel
+                ownerToMonster[playerId.UserId] = monsterModel
+                _tagOwned(monsterModel, playerId)
+        end
+
+        print("Registered player monster for ID: " .. tostring(playerId) .. " - " .. monsterModel.Name)
 end
 
 function module.UnregisterPlayerMonster(playerId)
-	if module.PlayerMonsters then
-		local playerIdStr = tostring(playerId)
-		if module.PlayerMonsters[playerIdStr] then
-			print("Unregistered player monster for ID: " .. playerIdStr)
-			module.PlayerMonsters[playerIdStr] = nil
-		end
-	end
+        if module.PlayerMonsters then
+                local playerIdStr = tostring(playerId)
+                if module.PlayerMonsters[playerIdStr] then
+                        print("Unregistered player monster for ID: " .. playerIdStr)
+                        module.PlayerMonsters[playerIdStr] = nil
+                end
+        end
+
+        if typeof(playerId) == "number" then
+                ownerToMonster[playerId] = nil
+                local player = Players:GetPlayerByUserId(playerId)
+                if player then
+                        ownerToMonster[player] = nil
+                end
+        elseif typeof(playerId) == "string" then
+                local numericId = tonumber(playerId)
+                if numericId then
+                        ownerToMonster[numericId] = nil
+                        local player = Players:GetPlayerByUserId(numericId)
+                        if player then
+                                ownerToMonster[player] = nil
+                        end
+                end
+        elseif typeof(playerId) == "Instance" and playerId:IsA("Player") then
+                ownerToMonster[playerId] = nil
+                ownerToMonster[playerId.UserId] = nil
+        end
 end
 
 local function _replaceModel(oldM, newM, keepCFrame)
-	local pivotCF = keepCFrame
-	if not pivotCF and oldM and oldM.Parent then
-		pivotCF = oldM:GetPivot()
-	end
-	if pivotCF then
-		newM:PivotTo(pivotCF)
-	end
-	newM.Parent = workspace
-	if oldM and oldM.Parent then
-		task.defer(function()
-			if oldM and oldM.Parent then
-				oldM:Destroy()
-			end
-		end)
-	end
+        local pivotCF = keepCFrame
+        if not pivotCF and oldM and oldM.Parent then
+                pivotCF = oldM:GetPivot()
+        end
+        if pivotCF then
+                newM:PivotTo(pivotCF)
+        end
+        newM.Parent = workspace
+        if oldM and oldM.Parent then
+                task.defer(function()
+                        if oldM and oldM.Parent then
+                                oldM:Destroy()
+                        end
+                end)
+        end
 end
 
 return module

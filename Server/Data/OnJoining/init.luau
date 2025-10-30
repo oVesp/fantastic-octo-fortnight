@@ -15,25 +15,26 @@ local module = {
 	function(plr, data)
 
 		-- Only create a new monster if there's no monster id present or the player is flagged as NewPlayer.
-		if data.Value.Monster and data.Value.Monster.id then print("already has monster") return end
-		print("no monster or missing id, generating a new one")
-		local monster = _G.MONSTERGENERATOR.RollMonster(plr.UserId)
-		print(data)
-		-- Merge generated monster data into the player's Monster table without overwriting full tables
-		for k, v in pairs(monster) do
-			if k == "Stats" then
-				for sk, sv in pairs(v) do
-					data.Value.Monster.Stats[sk] = sv
-				end
-			elseif k == "Moves" then
-				-- Ensure moves table exists and copy entries
-				for i, mv in ipairs(v) do
-					data.Value.Monster.Moves[i] = mv
-				end
-			else
-				data.Value.Monster[k] = v
-			end
-		end
+                if data.Value.Monster and data.Value.Monster.id then return end
+                local monster = _G.MONSTERGENERATOR.RollMonster(plr.UserId)
+                -- Merge generated monster data into the player's Monster table without overwriting full tables
+                data.Value.Monster = data.Value.Monster or {}
+                data.Value.Monster.Stats = data.Value.Monster.Stats or {}
+                data.Value.Monster.Moves = data.Value.Monster.Moves or {}
+                for k, v in pairs(monster) do
+                        if k == "Stats" then
+                                for sk, sv in pairs(v) do
+                                        data.Value.Monster.Stats[sk] = sv
+                                end
+                        elseif k == "Moves" then
+                                -- Ensure moves table exists and copy entries
+                                for i, mv in ipairs(v) do
+                                        data.Value.Monster.Moves[i] = mv
+                                end
+                        else
+                                data.Value.Monster[k] = v
+                        end
+                end
 		-- mark as initialized
 		data.Value.NewPlayer = false
 
