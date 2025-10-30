@@ -53,6 +53,34 @@ local function registerCameraMode(mode)
         CameraModes[#CameraModes + 1] = mode
 end
 
+local MIN_CAMERA_HEIGHT_BUFFER = 2
+
+local function clampCameraHeight(cf: CFrame?, info: CameraContext)
+        if not cf then
+                return cf
+        end
+
+        local minReference = info.focusPos.Y
+        if info.groupCenter then
+                minReference = math.min(minReference, info.groupCenter.Y)
+        end
+        if info.otherCenter then
+                minReference = math.min(minReference, info.otherCenter.Y)
+        end
+
+        local minHeight = math.max(minReference - MIN_CAMERA_HEIGHT_BUFFER, 1)
+        local position = cf.Position
+        if position.Y >= minHeight then
+                return cf
+        end
+
+        local lookVector = cf.LookVector
+        local upVector = cf.UpVector
+        local correctedPosition = Vector3.new(position.X, minHeight, position.Z)
+
+        return CFrame.lookAt(correctedPosition, correctedPosition + lookVector, upVector)
+end
+
 registerCameraMode({
         name = "focus_follow",
         duration = 6,
@@ -423,7 +451,9 @@ local function startCameraControl(models: {Model})
 
                 if #CameraModes == 0 then
                         local fallbackCF = CFrame.new(focusPos + Vector3.new(0, 12, 0), focusPos)
+                        fallbackCF = clampCameraHeight(fallbackCF, frameContext)
                         camera.CFrame = camera.CFrame:Lerp(fallbackCF, 0.12)
+                        camera.CFrame = clampCameraHeight(camera.CFrame, frameContext)
                         camera.FieldOfView += (targetFov - camera.FieldOfView) * 0.1
                         return
                 end
@@ -456,8 +486,10 @@ local function startCameraControl(models: {Model})
 
                 local desiredCF, desiredFov, lerpAlpha = mode.update(state.modeContext, frameContext, dt)
                 if desiredCF then
+                        desiredCF = clampCameraHeight(desiredCF, frameContext)
                         local alpha = math.clamp(lerpAlpha or 0.12, 0.02, 0.5)
                         camera.CFrame = camera.CFrame:Lerp(desiredCF, alpha)
+                        camera.CFrame = clampCameraHeight(camera.CFrame, frameContext)
                 end
 
                 local fov = desiredFov or targetFov
