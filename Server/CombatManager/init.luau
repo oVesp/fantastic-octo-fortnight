@@ -2,6 +2,7 @@
 local CombatManager = {}
 CombatManager.__index = CombatManager
 
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local RS = game:GetService("ReplicatedStorage")
@@ -116,6 +117,27 @@ local function gatherParticipantModels(participantStore)
         return models
 end
 
+local function gatherParticipantPlayers(participantStore)
+        local players = {}
+        local seen = {}
+
+        for _, participant in pairs(participantStore) do
+                local instance = participant and participant.instance
+                if typeof(instance) == "Instance" then
+                        local ownerId = instance:GetAttribute("OwnerId")
+                        if typeof(ownerId) == "number" then
+                                local player = Players:GetPlayerByUserId(ownerId)
+                                if player and not seen[player] then
+                                        seen[player] = true
+                                        table.insert(players, player)
+                                end
+                        end
+                end
+        end
+
+        return players
+end
+
 local function broadcastCombatCameraState(participantStore, isActive)
         if not CombatCameraToggleRemote then
                 return
@@ -126,7 +148,14 @@ local function broadcastCombatCameraState(participantStore, isActive)
                 return
         end
 
-        CombatCameraToggleRemote:FireAllClients(isActive, models)
+        local players = gatherParticipantPlayers(participantStore)
+        if #players == 0 then
+                return
+        end
+
+        for _, player in ipairs(players) do
+                CombatCameraToggleRemote:FireClient(player, isActive, models)
+        end
 end
 
 local STAT_SYNC_RULES = {
