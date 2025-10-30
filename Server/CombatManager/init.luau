@@ -287,17 +287,316 @@ local function inRange(a, b, minR, maxR)
 	return true
 end
 
+local resolveOwnedMonsterData
+
+local PRIMARY_STAT_KEYS = {
+	"Strength",
+	"Defense",
+	"Skill",
+	"Speed",
+	"Intelligence",
+	"Luck",
+}
+
+local DEFAULT_STAT_VALUES = {
+	Strength = 10,
+	Defense = 10,
+	Skill = 10,
+	Speed = 10,
+	Intelligence = 10,
+	Luck = 10,
+}
+
+local DEFAULT_RESOURCE_VALUES = {
+	MP = 0,
+	MaxMP = 100,
+}
+
+local function pushStatSource(target, seen, tbl)
+	if type(tbl) ~= "table" then
+		return
+	end
+	if not seen[tbl] then
+		seen[tbl] = true
+		table.insert(target, tbl)
+	end
+end
+
+local function collectSavedStatSources(monsterData, entry)
+	local sources = {}
+	local seen = setmetatable({}, { __mode = "k" })
+
+	local function consider(node)
+		if type(node) ~= "table" then
+			return
+		end
+		if type(node.Stats) == "table" then
+			pushStatSource(sources, seen, node.Stats)
+		end
+		if type(node.stats) == "table" then
+			pushStatSource(sources, seen, node.stats)
+		end
+
+		local hasDirectStat = false
+		for _, statName in ipairs(PRIMARY_STAT_KEYS) do
+			local value = node[statName]
+			if typeof(value) == "number" then
+				hasDirectStat = true
+				break
+			end
+		end
+		if not hasDirectStat then
+			local mpValue = node.MP or node.Mp or node.mp
+			local maxMp = node.MaxMP or node.maxMP or node.maxMp
+			if typeof(mpValue) == "number" or typeof(maxMp) == "number" then
+				hasDirectStat = true
+			end
+		end
+		if hasDirectStat then
+			pushStatSource(sources, seen, node)
+		end
+	end
+
+	consider(monsterData)
+
+	if type(monsterData) == "table" then
+		consider(monsterData.ActiveMonster)
+		consider(monsterData.ActiveMonsterData)
+
+		local monsters = monsterData.Monsters
+		if type(monsters) == "table" then
+			for _, candidate in pairs(monsters) do
+				consider(candidate)
+			end
+		end
+	end
+
+	if entry and type(entry.Data) == "table" then
+		consider(entry.Data)
+		consider(entry.Data.ActiveMonster)
+	end
+
+	if #sources == 0 then
+		local visited = setmetatable({}, { __mode = "k" })
+
+		local function scan(node)
+			if type(node) ~= "table" or visited[node] then
+				return
+			end
+			visited[node] = true
+			consider(node)
+			for _, value in pairs(node) do
+				if type(value) == "table" then
+					scan(value)
+				end
+			end
+		end
+
+		scan(monsterData)
+		if entry and type(entry.Data) == "table" then
+			scan(entry.Data)
+		end
+	end
+
+	return sources
+end
+
+local function readScalarStatFromSource(source, canonical)
+	if type(source) ~= "table" then
+		return nil
+	end
+
+	local rule = STAT_SYNC_RULES[canonical]
+	local seenKeys = {}
+
+	local function try(key)
+		if typeof(key) ~= "string" or seenKeys[key] then
+			return nil
+		end
+		seenKeys[key] = true
+		local value = source[key]
+		if typeof(value) == "number" then
+			return value
+		end
+		return nil
+	end
+
+	local value = try(canonical)
+	if value ~= nil then
+		return value
+	end
+
+	if rule then
+		value = try(rule.attr)
+		if value ~= nil then
+			return value
+		end
+		value = try(rule.alias)
+		if value ~= nil then
+			return value
+		end
+		value = try(rule.fallbackAttr)
+		if value ~= nil then
+			return value
+		end
+	end
+
+	value = try(string.upper(canonical))
+	if value ~= nil then
+		return value
+	end
+
+	value = try(string.lower(canonical))
+	if value ~= nil then
+		return value
+	end
+
+	return nil
+end
+
+local function readScalarStatFromSources(sources, canonical)
+	for _, source in ipairs(sources) do
+		local value = readScalarStatFromSource(source, canonical)
+		if value ~= nil then
+			return value
+		end
+	end
+	return nil
+end
+
+local function readMpFromSources(sources)
+	local mpValue, maxValue
+	for _, source in ipairs(sources) do
+		if not mpValue then
+			local v = source.MP or source.Mp or source.mp
+			if typeof(v) == "number" then
+				mpValue = v
+			end
+		end
+		if not maxValue then
+			local v = source.MaxMP or source.maxMP or source.maxMp
+			if typeof(v) == "number" then
+				maxValue = v
+			end
+		end
+		if mpValue and maxValue then
+			break
+		end
+	end
+	return mpValue, maxValue
+end
+
+local function readHpFromSources(sources)
+	local hpValue, maxHpValue
+	for _, source in ipairs(sources) do
+		if not hpValue then
+			local v = source.Hp or source.HP or source.hp
+			if typeof(v) == "number" then
+				hpValue = v
+			end
+		end
+		if not maxHpValue then
+			local v = source.MaxHP or source.maxHP or source.maxHp
+			if typeof(v) == "number" then
+				maxHpValue = v
+			end
+		end
+		if hpValue and maxHpValue then
+			break
+		end
+	end
+	return hpValue, maxHpValue
+end
+
 local function getEffectiveStats(model)
-	local base = {
-		Strength = model:GetAttribute("Strength") or 10,
-		Defense = model:GetAttribute("Defense") or 10,
-		Skill = model:GetAttribute("Skill") or 10,
-		Speed = model:GetAttribute("Speed") or 10,
-		Intelligence = model:GetAttribute("Intelligence") or 10,
-		Luck = model:GetAttribute("Luck") or 10,
-		MP = model:GetAttribute("MP") or 0,
-		MaxMP = model:GetAttribute("MaxMP") or 100,
-	}
+	local base = {}
+
+	local ownerId = model and model:GetAttribute("OwnerId")
+	local statSources = nil
+	if ownerId and resolveOwnedMonsterData then
+		local monsterData, entry = resolveOwnedMonsterData(ownerId)
+		if monsterData or entry then
+			statSources = collectSavedStatSources(monsterData, entry)
+		end
+	end
+	statSources = statSources or {}
+
+	for _, statName in ipairs(PRIMARY_STAT_KEYS) do
+		local value = readScalarStatFromSources(statSources, statName)
+		if typeof(value) ~= "number" then
+			local attrValue = model and model:GetAttribute(statName)
+			if typeof(attrValue) == "number" then
+				value = attrValue
+			end
+		end
+		if typeof(value) ~= "number" then
+			value = DEFAULT_STAT_VALUES[statName]
+		end
+		base[statName] = value
+	end
+
+	local mpValue, maxMpValue = readMpFromSources(statSources)
+	local attrMp = model and model:GetAttribute("MP")
+	local attrMaxMp = model and model:GetAttribute("MaxMP")
+
+	if typeof(mpValue) ~= "number" then
+		if typeof(attrMp) == "number" then
+			mpValue = attrMp
+		elseif typeof(attrMaxMp) == "number" then
+			mpValue = attrMaxMp
+		else
+			mpValue = DEFAULT_RESOURCE_VALUES.MP
+		end
+	end
+
+	if typeof(maxMpValue) ~= "number" then
+		if typeof(attrMaxMp) == "number" then
+			maxMpValue = attrMaxMp
+		elseif typeof(mpValue) == "number" then
+			maxMpValue = mpValue
+		else
+			maxMpValue = DEFAULT_RESOURCE_VALUES.MaxMP
+		end
+	end
+
+	base.MP = mpValue
+	base.MaxMP = maxMpValue
+
+	local hpValue, maxHpValue = readHpFromSources(statSources)
+	if typeof(hpValue) ~= "number" and model then
+		local attrHp = model:GetAttribute("Hp") or model:GetAttribute("HP")
+		if typeof(attrHp) ~= "number" then
+			local hum = model:FindFirstChildOfClass("Humanoid")
+			if hum then
+				attrHp = hum.MaxHealth
+				maxHpValue = maxHpValue or hum.MaxHealth
+			end
+		end
+		if typeof(attrHp) == "number" then
+			hpValue = attrHp
+		end
+	end
+
+	if typeof(maxHpValue) ~= "number" and typeof(hpValue) == "number" then
+		maxHpValue = hpValue
+	end
+
+	if typeof(hpValue) == "number" then
+		base.Hp = hpValue
+		base.HP = hpValue
+	end
+	if typeof(maxHpValue) == "number" then
+		base.MaxHP = maxHpValue
+	end
+
+	if typeof(base.MaxMP) == "number" and typeof(base.MP) == "number" then
+		if base.MP > base.MaxMP then
+			base.MaxMP = base.MP
+		end
+	else
+		base.MP = base.MP or DEFAULT_RESOURCE_VALUES.MP
+		base.MaxMP = base.MaxMP or DEFAULT_RESOURCE_VALUES.MaxMP
+	end
 
 	local mods, flags = StatusEffects.GetStatModifiers(model)
 	for stat, v in pairs(mods.add) do
@@ -471,11 +770,11 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 		local personalityName = monsterInstance:GetAttribute("Personality") or "Unpredictable"
 		local personalityData = PERSONALITIES_MODULE.Personalities[personalityName] or PERSONALITIES_MODULE.Personalities.Unpredictable
 
-                local combatantProfile = {
-                        id = participantId,
-                        instance = monsterInstance,
-                        team = team,
-                        stats = { Hp = maxHp },
+		local combatantProfile = {
+			id = participantId,
+			instance = monsterInstance,
+			team = team,
+			stats = { Hp = maxHp },
 			currentHp = humanoid and humanoid.Health or maxHp,
 			currentMp = currentMp,
 			moves = getMonsterMoves(monsterInstance),
@@ -485,13 +784,13 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 			combatState = "DECIDING", -- Use string literal
 			combatStateKey = nil, -- To store the key from _G.STATES
 			stateStartTime = os.clock(),
-                        currentPlan = nil,
-                        maxTargetLevel = 0,
-                        behaviorProfile = {
-                                aggression = personalityData.movementStyle.aggressionMultiplier or 1.0,
-                                patience = 1.0,
-                                caution = 0.5,
-                                adaptability = 0.7,
+			currentPlan = nil,
+			maxTargetLevel = 0,
+			behaviorProfile = {
+				aggression = personalityData.movementStyle.aggressionMultiplier or 1.0,
+				patience = 1.0,
+				caution = 0.5,
+				adaptability = 0.7,
 			}
 		}
 
@@ -1378,9 +1677,9 @@ end
 
 -- Move Execution
 function CombatManager.ExecuteTacticalMove(participant, move, combatData, explicitTarget, explicitTargetParticipant)
-        local attacker = participant.instance
-        local targetParticipant = explicitTargetParticipant or participant.target
-        local target = explicitTarget or (targetParticipant and targetParticipant.instance)
+	local attacker = participant.instance
+	local targetParticipant = explicitTargetParticipant or participant.target
+	local target = explicitTarget or (targetParticipant and targetParticipant.instance)
 
 	if not attacker or not target or not attacker.Parent or not target.Parent then
 		setTacticalState(participant, "DECIDING")
@@ -1430,34 +1729,34 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 		task.wait(move.castTime)
 	end
 
-        -- Check if still valid after cast
-        if not attacker or not target or not attacker.Parent or not target.Parent then
-                _G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
-                EnhancedMovement.LockMovement(attacker, false)
-                setTacticalState(participant, "DECIDING")
-                return
-        end
+	-- Check if still valid after cast
+	if not attacker or not target or not attacker.Parent or not target.Parent then
+		_G.STATES:RemoveState(attacker, "Casting", castKey) -- Use the key
+		EnhancedMovement.LockMovement(attacker, false)
+		setTacticalState(participant, "DECIDING")
+		return
+	end
 
-        local targetLevelValue = target:GetAttribute("Level")
-        local isEnemyTarget = true
-        if targetParticipant and targetParticipant.team == participant.team then
-                isEnemyTarget = false
-        elseif target == attacker then
-                isEnemyTarget = false
-        end
+	local targetLevelValue = target:GetAttribute("Level")
+	local isEnemyTarget = true
+	if targetParticipant and targetParticipant.team == participant.team then
+		isEnemyTarget = false
+	elseif target == attacker then
+		isEnemyTarget = false
+	end
 
-        if isEnemyTarget and typeof(targetLevelValue) == "number" then
-                local currentMax = participant.maxTargetLevel
-                if typeof(currentMax) ~= "number" or targetLevelValue > currentMax then
-                        participant.maxTargetLevel = targetLevelValue
-                end
-        end
+	if isEnemyTarget and typeof(targetLevelValue) == "number" then
+		local currentMax = participant.maxTargetLevel
+		if typeof(currentMax) ~= "number" or targetLevelValue > currentMax then
+			participant.maxTargetLevel = targetLevelValue
+		end
+	end
 
-        -- Resolve the attack
-        local attStats = getEffectiveStats(attacker)
-        local tgtStats = getEffectiveStats(target)
-        local tags = move.tags or {}
-        local isUtilityMove = (move.power or 0) <= 0
+	-- Resolve the attack
+	local attStats = getEffectiveStats(attacker)
+	local tgtStats = getEffectiveStats(target)
+	local tags = move.tags or {}
+	local isUtilityMove = (move.power or 0) <= 0
 
 	if not isUtilityMove then
 		for _, tag in ipairs(tags) do
@@ -1576,102 +1875,102 @@ function CombatManager.ExecuteTacticalMove(participant, move, combatData, explic
 end
 
 function CombatManager.ApplyMoveEffects(attacker, target, move)
-        if not move or not move.effects or #move.effects == 0 then
-                return
-        end
+	if not move or not move.effects or #move.effects == 0 then
+		return
+	end
 
-        local function resolveRecipient(effect)
-                local destination = effect.target
-                if destination == "attacker" or destination == "self" then
-                        return attacker
-                end
-                return target
-        end
+	local function resolveRecipient(effect)
+		local destination = effect.target
+		if destination == "attacker" or destination == "self" then
+			return attacker
+		end
+		return target
+	end
 
-        local function findAuraPart(model)
-                if not model then
-                        return nil
-                end
-                return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-        end
+	local function findAuraPart(model)
+		if not model then
+			return nil
+		end
+		return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+	end
 
-        iterateMoveEffects(move, function(effectType, entry)
-                local effect = typeof(entry) == "table" and entry or { type = effectType, status = effectType }
-                local statusName = effect.status or effectType
-                local recipient = resolveRecipient(effect)
+	iterateMoveEffects(move, function(effectType, entry)
+		local effect = typeof(entry) == "table" and entry or { type = effectType, status = effectType }
+		local statusName = effect.status or effectType
+		local recipient = resolveRecipient(effect)
 
-                local alreadyFortified = nil
-                if effectType == "FortifyAura" and attacker then
-                        alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
-                end
+		local alreadyFortified = nil
+		if effectType == "FortifyAura" and attacker then
+			alreadyFortified = StatusEffects.Has(attacker, "GuardUp")
+		end
 
-                if recipient and statusName then
-                        local payload = {
-                                name = statusName,
-                                dur = effect.duration or effect.dur or 0,
-                                stacks = effect.stacks or 1,
-                                power = effect.power,
-                                dps = effect.dps,
-                        }
-                        StatusEffects.Apply(recipient, payload, attacker)
-                end
+		if recipient and statusName then
+			local payload = {
+				name = statusName,
+				dur = effect.duration or effect.dur or 0,
+				stacks = effect.stacks or 1,
+				power = effect.power,
+				dps = effect.dps,
+			}
+			StatusEffects.Apply(recipient, payload, attacker)
+		end
 
-                if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
-                        return
-                end
+		if not (_G.EFFECTS and _G.EFFECTS.AuraEffect) then
+			return
+		end
 
-                if effectType == "FortifyAura" and attacker then
-                        local basePart = findAuraPart(attacker)
-                        if basePart then
-                                _G.EFFECTS.AuraEffect({
-                                        Name = "FortifyAura",
-                                        LocationParts = {basePart},
-                                        Color = ColorSequence.new({
-                                                ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
-                                                ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
-                                        }),
-                                        Duration = alreadyFortified and (effect.refreshDuration or effect.duration or effect.dur or 0) or (effect.duration or effect.dur or 0),
-                                        AuraReference = "Fortify",
-                                })
-                        end
-                        return
-                end
+		if effectType == "FortifyAura" and attacker then
+			local basePart = findAuraPart(attacker)
+			if basePart then
+				_G.EFFECTS.AuraEffect({
+					Name = "FortifyAura",
+					LocationParts = {basePart},
+					Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 215, 255)),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 140, 255))
+					}),
+					Duration = alreadyFortified and (effect.refreshDuration or effect.duration or effect.dur or 0) or (effect.duration or effect.dur or 0),
+					AuraReference = "Fortify",
+				})
+			end
+			return
+		end
 
-                if effectType == "Shield" then
-                        local basePart = findAuraPart(recipient)
-                        if basePart then
-                                _G.EFFECTS.AuraEffect({
-                                        Name = "ShieldAura",
-                                        LocationParts = {basePart},
-                                        Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
-                                        Duration = effect.duration or effect.dur or 0,
-                                        AuraReference = "Shield",
-                                })
-                        end
-                elseif effectType == "BuffSelf" and attacker then
-                        local basePart = findAuraPart(attacker)
-                        if basePart then
-                                _G.EFFECTS.AuraEffect({
-                                        Name = "BuffAura",
-                                        LocationParts = {basePart},
-                                        Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
-                                        Duration = effect.duration or effect.dur or 0,
-                                        AuraReference = "GuardUp",
-                                })
-                        end
-                elseif effectType == "Haste" and attacker then
-                        local basePart = findAuraPart(attacker)
-                        if basePart then
-                                _G.EFFECTS.AuraEffect({
-                                        Name = "SpeedAura",
-                                        LocationParts = {basePart},
-                                        Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
-                                        Duration = effect.duration or effect.dur or 0,
-                                        AuraReference = "Haste",
-                                })
-                        end
-                end
-        end)
+		if effectType == "Shield" then
+			local basePart = findAuraPart(recipient)
+			if basePart then
+				_G.EFFECTS.AuraEffect({
+					Name = "ShieldAura",
+					LocationParts = {basePart},
+					Color = ColorSequence.new(Color3.fromRGB(100, 150, 255)),
+					Duration = effect.duration or effect.dur or 0,
+					AuraReference = "Shield",
+				})
+			end
+		elseif effectType == "BuffSelf" and attacker then
+			local basePart = findAuraPart(attacker)
+			if basePart then
+				_G.EFFECTS.AuraEffect({
+					Name = "BuffAura",
+					LocationParts = {basePart},
+					Color = ColorSequence.new(Color3.fromRGB(255, 200, 0)),
+					Duration = effect.duration or effect.dur or 0,
+					AuraReference = "GuardUp",
+				})
+			end
+		elseif effectType == "Haste" and attacker then
+			local basePart = findAuraPart(attacker)
+			if basePart then
+				_G.EFFECTS.AuraEffect({
+					Name = "SpeedAura",
+					LocationParts = {basePart},
+					Color = ColorSequence.new(Color3.fromRGB(0, 255, 100)),
+					Duration = effect.duration or effect.dur or 0,
+					AuraReference = "Haste",
+				})
+			end
+		end
+	end)
 end
 
 -- Target Selection
@@ -1697,313 +1996,313 @@ end
 
 -- Combat Results
 local function computeTargetLevelMultiplier(participant, combatData)
-        local inst = participant.instance
-        if not inst or not inst.Parent then
-                return 1
-        end
+	local inst = participant.instance
+	if not inst or not inst.Parent then
+		return 1
+	end
 
-        local tracked = participant.maxTargetLevel
-        if typeof(tracked) ~= "number" or tracked <= 0 then
-                tracked = nil
-        end
+	local tracked = participant.maxTargetLevel
+	if typeof(tracked) ~= "number" or tracked <= 0 then
+		tracked = nil
+	end
 
-        if not tracked then
-                for teamId, members in pairs(combatData.teams) do
-                        if teamId ~= participant.team then
-                                for _, enemy in ipairs(members) do
-                                        local enemyInst = enemy.instance
-                                        if enemyInst and enemyInst.Parent then
-                                                local enemyLevel = enemyInst:GetAttribute("Level")
-                                                if typeof(enemyLevel) == "number" and enemyLevel > 0 then
-                                                        tracked = math.max(tracked or 0, enemyLevel)
-                                                end
-                                        end
-                                end
-                        end
-                end
-        end
+	if not tracked then
+		for teamId, members in pairs(combatData.teams) do
+			if teamId ~= participant.team then
+				for _, enemy in ipairs(members) do
+					local enemyInst = enemy.instance
+					if enemyInst and enemyInst.Parent then
+						local enemyLevel = enemyInst:GetAttribute("Level")
+						if typeof(enemyLevel) == "number" and enemyLevel > 0 then
+							tracked = math.max(tracked or 0, enemyLevel)
+						end
+					end
+				end
+			end
+		end
+	end
 
-        if not tracked then
-                return 1
-        end
+	if not tracked then
+		return 1
+	end
 
-        local ownLevel = inst:GetAttribute("Level")
-        if typeof(ownLevel) ~= "number" or ownLevel <= 0 then
-                ownLevel = tracked
-        end
+	local ownLevel = inst:GetAttribute("Level")
+	if typeof(ownLevel) ~= "number" or ownLevel <= 0 then
+		ownLevel = tracked
+	end
 
-        local delta = tracked - ownLevel
-        if delta == 0 then
-                return 1
-        end
+	local delta = tracked - ownLevel
+	if delta == 0 then
+		return 1
+	end
 
-        local STEP = 0.1
-        if delta > 0 then
-                return math.clamp(1 + delta * STEP, 1, 2.0)
-        else
-                return math.clamp(1 / (1 + (-delta) * STEP), 0.5, 1)
-        end
+	local STEP = 0.1
+	if delta > 0 then
+		return math.clamp(1 + delta * STEP, 1, 2.0)
+	else
+		return math.clamp(1 / (1 + (-delta) * STEP), 0.5, 1)
+	end
 end
 
 local XP_REWARD_FRACTION = 0.02
 local XP_REWARD_LOSS_FRACTION = 0.25
 
-local function resolveOwnedMonsterData(ownerId)
-        local ownerKey = tonumber(ownerId)
-        if not ownerKey then
-                return nil, nil
-        end
+resolveOwnedMonsterData = function(ownerId)
+	local ownerKey = tonumber(ownerId)
+	if not ownerKey then
+		return nil, nil
+	end
 
-        local monsterData
-        local entry
+	local monsterData
+	local entry
 
-        if _G.MONSTERGENERATOR and typeof(_G.MONSTERGENERATOR.GetPlayerMonsterData) == "function" then
-                entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(ownerKey)
-                if entry and type(entry.Data) == "table" then
-                        monsterData = entry.Data
-                end
-        end
+	if _G.MONSTERGENERATOR and typeof(_G.MONSTERGENERATOR.GetPlayerMonsterData) == "function" then
+		entry = _G.MONSTERGENERATOR.GetPlayerMonsterData(ownerKey)
+		if entry and type(entry.Data) == "table" then
+			monsterData = entry.Data
+		end
+	end
 
-        if not monsterData and _G.DATA and typeof(_G.DATA.Get) == "function" then
-                local ok, playerStore = pcall(function()
-                        return _G.DATA:Get(ownerKey)
-                end)
-                if ok and type(playerStore) == "table" and type(playerStore.Monster) == "table" then
-                        monsterData = playerStore.Monster
-                end
-        end
+	if not monsterData and _G.DATA and typeof(_G.DATA.Get) == "function" then
+		local ok, playerStore = pcall(function()
+			return _G.DATA:Get(ownerKey)
+		end)
+		if ok and type(playerStore) == "table" and type(playerStore.Monster) == "table" then
+			monsterData = playerStore.Monster
+		end
+	end
 
-        return monsterData, entry
+	return monsterData, entry
 end
 
 local function highestEnemyLevel(participant, combatData)
-        local highest = 0
-        for teamId, members in pairs(combatData.teams) do
-                if teamId ~= participant.team then
-                        for _, enemy in ipairs(members) do
-                                local enemyInst = enemy.instance
-                                if enemyInst and enemyInst.Parent then
-                                        local enemyLevel = enemyInst:GetAttribute("Level")
-                                        if typeof(enemyLevel) == "number" and enemyLevel > highest then
-                                                highest = enemyLevel
-                                        end
-                                end
-                        end
-                end
-        end
-        return highest
+	local highest = 0
+	for teamId, members in pairs(combatData.teams) do
+		if teamId ~= participant.team then
+			for _, enemy in ipairs(members) do
+				local enemyInst = enemy.instance
+				if enemyInst and enemyInst.Parent then
+					local enemyLevel = enemyInst:GetAttribute("Level")
+					if typeof(enemyLevel) == "number" and enemyLevel > highest then
+						highest = enemyLevel
+					end
+				end
+			end
+		end
+	end
+	return highest
 end
 
 local function computeCombatExperience(participant, combatData, didWin, multiplier)
-        local baseLevel = highestEnemyLevel(participant, combatData)
-        if baseLevel <= 0 then
-                local inst = participant.instance
-                baseLevel = (inst and inst:GetAttribute("Level")) or 1
-        end
-        baseLevel = math.clamp(math.floor(baseLevel), 1, Leveling.MaxLevel)
+	local baseLevel = highestEnemyLevel(participant, combatData)
+	if baseLevel <= 0 then
+		local inst = participant.instance
+		baseLevel = (inst and inst:GetAttribute("Level")) or 1
+	end
+	baseLevel = math.clamp(math.floor(baseLevel), 1, Leveling.MaxLevel)
 
-        local xpToNext = Leveling.GetExperienceToNextLevel(baseLevel)
-        if xpToNext <= 0 then
-                local probe = baseLevel - 1
-                while probe >= 1 and xpToNext <= 0 do
-                        xpToNext = Leveling.GetExperienceToNextLevel(probe)
-                        probe -= 1
-                end
-        end
-        if xpToNext <= 0 then
-                xpToNext = 1000
-        end
+	local xpToNext = Leveling.GetExperienceToNextLevel(baseLevel)
+	if xpToNext <= 0 then
+		local probe = baseLevel - 1
+		while probe >= 1 and xpToNext <= 0 do
+			xpToNext = Leveling.GetExperienceToNextLevel(probe)
+			probe -= 1
+		end
+	end
+	if xpToNext <= 0 then
+		xpToNext = 1000
+	end
 
-        local reward = math.floor(xpToNext * XP_REWARD_FRACTION)
-        reward = math.max(reward, 50)
-        reward = math.floor(reward * (multiplier or 1))
+	local reward = math.floor(xpToNext * XP_REWARD_FRACTION)
+	reward = math.max(reward, 50)
+	reward = math.floor(reward * (multiplier or 1))
 
-        if not didWin then
-                reward = math.floor(reward * XP_REWARD_LOSS_FRACTION)
-        end
+	if not didWin then
+		reward = math.floor(reward * XP_REWARD_LOSS_FRACTION)
+	end
 
-        return math.max(reward, 0)
+	return math.max(reward, 0)
 end
 
 local function applyCombatExperience(participant, combatData, didWin, multiplier, monsterData, ownerPlayer, generatorEntry)
-        if not monsterData then
-                return
-        end
+	if not monsterData then
+		return
+	end
 
-        local reward = computeCombatExperience(participant, combatData, didWin, multiplier)
-        if reward <= 0 then
-                return
-        end
+	local reward = computeCombatExperience(participant, combatData, didWin, multiplier)
+	if reward <= 0 then
+		return
+	end
 
-        Leveling.AddExperience(monsterData, reward, {
-                Model = participant.instance,
-                Player = ownerPlayer,
-        })
+	Leveling.AddExperience(monsterData, reward, {
+		Model = participant.instance,
+		Player = ownerPlayer,
+	})
 
-        if generatorEntry and type(generatorEntry.Data) == "table" then
-                generatorEntry.Data.Experience = monsterData.Experience
-                generatorEntry.Data.Level = monsterData.Level
-                generatorEntry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
-        end
+	if generatorEntry and type(generatorEntry.Data) == "table" then
+		generatorEntry.Data.Experience = monsterData.Experience
+		generatorEntry.Data.Level = monsterData.Level
+		generatorEntry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
+	end
 end
 
 function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInstance)
-        print("Processing combat results...")
+	print("Processing combat results...")
 
-        -- Debug: Print all participants status
-        for participantId, participant in pairs(combatData.participants) do
-                local alive = participant.currentHp > 0 and isAlive(participant.instance)
+	-- Debug: Print all participants status
+	for participantId, participant in pairs(combatData.participants) do
+		local alive = participant.currentHp > 0 and isAlive(participant.instance)
 		print(string.format("[Result] %s: HP=%d, Alive=%s", 
 			participantId, participant.currentHp, tostring(alive)))
 	end
 
 	-- === RESULTS: wins + stat increases via _G.FUNCTIONS.distributePoints ===
-        local function applyResults(participant, didWin, multiplier, combatData)
-                local m = participant.instance
-                if not (m and m.Parent) then return end
-                local ownerId = m:GetAttribute("OwnerId")
-                local ownerKey = tonumber(ownerId)
-                local ownerPlr = ownerKey and game.Players:GetPlayerByUserId(ownerKey) or nil
-                local monsterData, entry = resolveOwnedMonsterData(ownerId)
+	local function applyResults(participant, didWin, multiplier, combatData)
+		local m = participant.instance
+		if not (m and m.Parent) then return end
+		local ownerId = m:GetAttribute("OwnerId")
+		local ownerKey = tonumber(ownerId)
+		local ownerPlr = ownerKey and game.Players:GetPlayerByUserId(ownerKey) or nil
+		local monsterData, entry = resolveOwnedMonsterData(ownerId)
 
-                -- Wins/Losses as attributes (visible & simple)
-                if didWin then
-                        m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
-                        if ownerId and _G.DATA and typeof(_G.DATA.Get) == "function" then
-                                local ok, store = pcall(function()
-                                        return _G.DATA:Get(ownerId)
-                                end)
-                                if ok and type(store) == "table" and type(store.Monster) == "table" then
-                                        store.Monster.Wins = (store.Monster.Wins or 0) + 1
-                                end
-                        end
-                else
-                        print("Loss")
-                end
+		-- Wins/Losses as attributes (visible & simple)
+		if didWin then
+			m:SetAttribute("Wins", (m:GetAttribute("Wins") or 0) + 1)
+			if ownerId and _G.DATA and typeof(_G.DATA.Get) == "function" then
+				local ok, store = pcall(function()
+					return _G.DATA:Get(ownerId)
+				end)
+				if ok and type(store) == "table" and type(store.Monster) == "table" then
+					store.Monster.Wins = (store.Monster.Wins or 0) + 1
+				end
+			end
+		else
+			print("Loss")
+		end
 
-                -- Stat bumps: 2 points for win, 1 for loss
-                local basePoints = didWin and 5 or 10
-                local scaledPoints = basePoints * (multiplier or 1)
-                local points = math.max(1, math.floor(scaledPoints + 0.5))
-                local keys = {"Hp","Mp","Strength","Defense","Skill","Speed","Intelligence"} -- attrs you actually set
+		-- Stat bumps: 2 points for win, 1 for loss
+		local basePoints = didWin and 5 or 10
+		local scaledPoints = basePoints * (multiplier or 1)
+		local points = math.max(1, math.floor(scaledPoints + 0.5))
+		local keys = {"Hp","Mp","Strength","Defense","Skill","Speed","Intelligence"} -- attrs you actually set
 
-                local dist
-                if _G.FUNCTIONS and _G.FUNCTIONS.distributePoints then
-                        local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
-                        dist = ok and res or nil
-                end
-                if not dist then
-                        -- simple fallback: random +1s
-                        dist = {}
-                        for i = 1, points do
-                                local k = keys[math.random(1, #keys)]
-                                dist[k] = (dist[k] or 0) + 1
-                        end
-                end
+		local dist
+		if _G.FUNCTIONS and _G.FUNCTIONS.distributePoints then
+			local ok, res = pcall(function() return _G.FUNCTIONS.distributePoints(keys, points) end)
+			dist = ok and res or nil
+		end
+		if not dist then
+			-- simple fallback: random +1s
+			dist = {}
+			for i = 1, points do
+				local k = keys[math.random(1, #keys)]
+				dist[k] = (dist[k] or 0) + 1
+			end
+		end
 
-                local StatUpdate = game.ReplicatedStorage.Remotes.StatUpdate
-                if ownerPlr then
-                        StatUpdate:FireClient(ownerPlr, dist, ownerId)
-                        if didWin then
-                                _G.EFFECTS.PlaySound("Success", {Where = ownerPlr.Character})
-                        else
-                                _G.EFFECTS.PlaySound("Fail", {Where = ownerPlr.Character})
-                        end
-                end
-                -- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
-                for k, add in pairs(dist) do
-                        if add and add ~= 0 then
-                                if k == "Hp" then
-                                        local hum = m:FindFirstChildOfClass("Humanoid")
-                                        if hum then
-                                                hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
-                                                -- don't fully heal; but keep current within new max
-                                                hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
-                                        end
-                                        m:SetAttribute("Hp", (m:GetAttribute("Hp") or 100) + add)
-                                elseif k == "Mp" then
-                                        m:SetAttribute("MP", (m:GetAttribute("MP") or 100) + add)
-                                        m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
-                                else
-                                        m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
-                                end
-                        end
-                end
+		local StatUpdate = game.ReplicatedStorage.Remotes.StatUpdate
+		if ownerPlr then
+			StatUpdate:FireClient(ownerPlr, dist, ownerId)
+			if didWin then
+				_G.EFFECTS.PlaySound("Success", {Where = ownerPlr.Character})
+			else
+				_G.EFFECTS.PlaySound("Fail", {Where = ownerPlr.Character})
+			end
+		end
+		-- Apply bumps to Attributes; for Hp also bump Humanoid.MaxHealth
+		for k, add in pairs(dist) do
+			if add and add ~= 0 then
+				if k == "Hp" then
+					local hum = m:FindFirstChildOfClass("Humanoid")
+					if hum then
+						hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth + add))
+						-- don't fully heal; but keep current within new max
+						hum.Health = math.clamp(hum.Health, 1, hum.MaxHealth)
+					end
+					m:SetAttribute("Hp", (m:GetAttribute("Hp") or 100) + add)
+				elseif k == "Mp" then
+					m:SetAttribute("MP", (m:GetAttribute("MP") or 100) + add)
+					m:SetAttribute("MaxMP", (m:GetAttribute("MaxMP") or 100) + add)
+				else
+					m:SetAttribute(k, (m:GetAttribute(k) or 0) + add)
+				end
+			end
+		end
 
-                m:SetAttribute("LastRewardMultiplier", multiplier or 1)
+		m:SetAttribute("LastRewardMultiplier", multiplier or 1)
 
-                applyCombatExperience(participant, combatData, didWin, multiplier, monsterData, ownerPlr, entry)
+		applyCombatExperience(participant, combatData, didWin, multiplier, monsterData, ownerPlr, entry)
 
-                -- Optionally notify your data layer
-                if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
-                        local pid = tonumber(ownerId or 0)
-                        if pid and pid > 0 then
-                                local generatorEntry = entry or _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
-                                if generatorEntry and generatorEntry.Data then
-                                        generatorEntry.Data.Wins = m:GetAttribute("Wins") or generatorEntry.Data.Wins or 0
+		-- Optionally notify your data layer
+		if _G.MONSTERGENERATOR and _G.MONSTERGENERATOR.GetPlayerMonsterData then
+			local pid = tonumber(ownerId or 0)
+			if pid and pid > 0 then
+				local generatorEntry = entry or _G.MONSTERGENERATOR.GetPlayerMonsterData(pid)
+				if generatorEntry and generatorEntry.Data then
+					generatorEntry.Data.Wins = m:GetAttribute("Wins") or generatorEntry.Data.Wins or 0
 
-                                        local statsTargets = gatherStatsTables(pid, generatorEntry)
-                                        if #statsTargets > 0 then
-                                                syncMonsterStatsIntoTables(m, statsTargets)
-                                        end
-                                end
-                        end
-                end
-        end
+					local statsTargets = gatherStatsTables(pid, generatorEntry)
+					if #statsTargets > 0 then
+						syncMonsterStatsIntoTables(m, statsTargets)
+					end
+				end
+			end
+		end
+	end
 
 	-- Apply results to everyone
-        for _, participant in pairs(combatData.participants) do
-                if participant.instance and participant.instance.Parent then
-                        local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
-                        local levelMultiplier = computeTargetLevelMultiplier(participant, combatData)
-                        applyResults(participant, didWin, levelMultiplier, combatData)
-                end
-        end
+	for _, participant in pairs(combatData.participants) do
+		if participant.instance and participant.instance.Parent then
+			local didWin = (winningTeam ~= nil) and (participant.team == winningTeam)
+			local levelMultiplier = computeTargetLevelMultiplier(participant, combatData)
+			applyResults(participant, didWin, levelMultiplier, combatData)
+		end
+	end
 
-        if winningTeam then
-                for _, member in ipairs(combatData.teams[winningTeam]) do
-                        local ownerId = member.instance:GetAttribute("OwnerId")
-                        if ownerId and _G.DATA then
-                                local playerData = _G.DATA:Get(ownerId)
-                                local monsterData = playerData and playerData.Monster
-                                if monsterData then
-                                        -- Wins were already incremented in applyResults; just resolve unlocks here.
-                                        MoveUnlocks.ResolveUnlocks(monsterData, "combat", { damageDealt = member._damage or 0 })
-                                end
-                        end
-                end
-        end
+	if winningTeam then
+		for _, member in ipairs(combatData.teams[winningTeam]) do
+			local ownerId = member.instance:GetAttribute("OwnerId")
+			if ownerId and _G.DATA then
+				local playerData = _G.DATA:Get(ownerId)
+				local monsterData = playerData and playerData.Monster
+				if monsterData then
+					-- Wins were already incremented in applyResults; just resolve unlocks here.
+					MoveUnlocks.ResolveUnlocks(monsterData, "combat", { damageDealt = member._damage or 0 })
+				end
+			end
+		end
+	end
 
 	-- === Your existing reset for survivors ===
 	for _, participant in pairs(combatData.participants) do
-                if participant.instance and participant.instance.Parent then
-                        local ownerId = participant.instance:GetAttribute("OwnerId")
+		if participant.instance and participant.instance.Parent then
+			local ownerId = participant.instance:GetAttribute("OwnerId")
 
-                        if participant.currentHp <= 0 then
-                                if ownerId then
-                                        local monsterData, entry = resolveOwnedMonsterData(ownerId)
-                                        local ownerPlr = nil
-                                        local ownerKey = tonumber(ownerId)
-                                        if ownerKey then
-                                                ownerPlr = game.Players:GetPlayerByUserId(ownerKey)
-                                        end
-                                        if monsterData then
-                                                Leveling.ApplyDeathPenalty(monsterData, 0.2, {
-                                                        Model = participant.instance,
-                                                        Player = ownerPlr,
-                                                })
-                                                if entry and entry.Data then
-                                                        entry.Data.Experience = monsterData.Experience
-                                                        entry.Data.Level = monsterData.Level
-                                                        entry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
-                                                end
-                                        end
-                                end
-                                _G.STATES:SetState(participant.instance, "Dead")
-                        else
-                                -- Reset combat states
-                                if participant.combatState and participant.combatStateKey then
-                                        if _G.STATES:IsInState(participant.instance, participant.combatState) then
+			if participant.currentHp <= 0 then
+				if ownerId then
+					local monsterData, entry = resolveOwnedMonsterData(ownerId)
+					local ownerPlr = nil
+					local ownerKey = tonumber(ownerId)
+					if ownerKey then
+						ownerPlr = game.Players:GetPlayerByUserId(ownerKey)
+					end
+					if monsterData then
+						Leveling.ApplyDeathPenalty(monsterData, 0.2, {
+							Model = participant.instance,
+							Player = ownerPlr,
+						})
+						if entry and entry.Data then
+							entry.Data.Experience = monsterData.Experience
+							entry.Data.Level = monsterData.Level
+							entry.Data.LevelingBaseStats = monsterData.LevelingBaseStats
+						end
+					end
+				end
+				_G.STATES:SetState(participant.instance, "Dead")
+			else
+				-- Reset combat states
+				if participant.combatState and participant.combatStateKey then
+					if _G.STATES:IsInState(participant.instance, participant.combatState) then
 						_G.STATES:RemoveState(participant.instance, participant.combatState, participant.combatStateKey)
 					end
 				end
@@ -2042,9 +2341,9 @@ function CombatManager.ProcessCombatResults(combatData, winningTeam, winningInst
 		end
 	end
 
-        for participantId, participant in pairs(combatData.participants) do
-                if participant.currentHp > 0 then
-                        local ownerId = participant.instance:GetAttribute("OwnerId")
+	for participantId, participant in pairs(combatData.participants) do
+		if participant.currentHp > 0 then
+			local ownerId = participant.instance:GetAttribute("OwnerId")
 			if ownerId then
 				local player = game.Players:GetPlayerByUserId(ownerId)
 				if player and _G.MOVE_LEARNING then
