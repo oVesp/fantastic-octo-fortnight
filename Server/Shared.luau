@@ -345,6 +345,18 @@ EvolutionRequest.OnServerEvent:Connect(function(player)
                 local reason = tostring(resultOrReason or "unknown reason")
                 local log = reason == "Evolution chance failed" and print or warn
                 log(("Evolution failed for %s: %s"):format(player.Name, reason))
+                local reasonLower = string.lower(reason)
+                if reasonLower:find("level") then
+                        local effects = _G and _G.EFFECTS
+                        if effects and typeof(effects.ShowNotification) == "function" then
+                                effects.ShowNotification({
+                                        Player = player,
+                                        Title = "Evolution Unavailable",
+                                        Description = "Your monster needs to reach a higher level before evolving.",
+                                        Duration = 4,
+                                })
+                        end
+                end
                 if EvolutionComplete then
                         EvolutionComplete:FireClient(player, { success = false, reason = reason })
                 end
