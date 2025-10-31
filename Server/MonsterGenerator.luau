@@ -62,7 +62,7 @@ local function applyLevelScaling(stats, level)
 end
 
 local function applyMultipliers(stats, mult)
-	if not mult or type(mult) ~= "table" then return stats end
+        if not mult or type(mult) ~= "table" then return stats end
 	local map = {
 		Strength = {"Strength", "STR"},
 		Defense = {"Defense", "DEF"},
@@ -85,6 +85,43 @@ local function applyMultipliers(stats, mult)
 		end
 	end
 	return stats
+end
+
+local function normalizeMoveEntry(entry)
+        if typeof(entry) == "table" then
+                local moveId = entry.id or entry.Id or (entry.move and (entry.move.id or entry.move.Id))
+                if typeof(moveId) ~= "string" or moveId == "" then
+                        return nil
+                end
+
+                local clone = table.clone(entry)
+                clone.id = moveId
+                clone.Id = moveId
+                if typeof(clone.move) == "table" then
+                        clone.move.id = moveId
+                        clone.move.Id = moveId
+                end
+
+                if clone.rarity == nil then
+                        local def = Moves:GetMove(nil, moveId)
+                        clone.rarity = (def and def.rarity) or "Amateur"
+                end
+
+                return clone
+        elseif typeof(entry) == "string" then
+                if entry == "" then
+                        return nil
+                end
+
+                local def = Moves:GetMove(nil, entry)
+                return {
+                        id = entry,
+                        Id = entry,
+                        rarity = (def and def.rarity) or "Amateur",
+                }
+        end
+
+        return nil
 end
 
 local function rollStats(stage)
@@ -185,17 +222,27 @@ function module.RollMonster(ownerId, isNPC, options)
 	local personalityName = Personalities:RollPersonality()
 	--print(personalityName)
 	-- Get the personality data for stat multipliers
-	local personalityData = Personalities.Personalities[personalityName] or {}
+        local personalityData = Personalities.Personalities[personalityName] or {}
 
-	local moves
-	if isNPC then
-		moves = Moves:GetRandomMoves(race, 3)
-	else
-		moves = Moves:getStarterMoves(race)
-		--print(moves)
-	end
+        local moves
+        if isNPC then
+                moves = Moves:GetRandomMoves(race, 3)
+        else
+                moves = Moves:getStarterMoves(race)
+                --print(moves)
+        end
 
-	local baseStats = rollStats(stage)
+        local normalizedMoves = {}
+        for _, entry in ipairs(moves or {}) do
+                local normalized = normalizeMoveEntry(entry)
+                if normalized then
+                        table.insert(normalizedMoves, normalized)
+                end
+        end
+
+        moves = normalizedMoves
+
+        local baseStats = rollStats(stage)
 	-- Apply level scaling to base stats
 	local scaledStats = applyLevelScaling(baseStats, level)
 
@@ -247,8 +294,9 @@ function module.RollMonster(ownerId, isNPC, options)
                                                 playerData.Monster.Stats[statKey] = statValue
                                         end
                                 elseif key == "Moves" then
+                                        table.clear(playerData.Monster.Moves)
                                         for index, move in ipairs(value) do
-                                                playerData.Monster.Moves[index] = move
+                                                playerData.Monster.Moves[index] = table.clone(move)
                                         end
                                 else
                                         playerData.Monster[key] = value
