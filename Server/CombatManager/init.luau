@@ -187,6 +187,164 @@ local function gatherParticipantPlayers(participantStore)
         return players
 end
 
+local function safeRoot(model)
+        return model.PrimaryPart or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart")
+end
+
+local function orientParticipantsForCombat(models, zone)
+        if typeof(models) ~= "table" then
+                return
+        end
+
+        local entries = {}
+
+        local function resolveModel(item)
+                if typeof(item) == "Instance" and item:IsA("Model") then
+                        return item
+                elseif typeof(item) == "table" then
+                        local instance = item.instance or item.model or item.monster
+                        if typeof(instance) == "Instance" and instance:IsA("Model") then
+                                return instance
+                        end
+                end
+                return nil
+        end
+
+        for _, item in ipairs(models) do
+                local model = resolveModel(item)
+                if model then
+                        local root = safeRoot(model)
+                        if root then
+                                table.insert(entries, { model = model, root = root })
+                        end
+                end
+        end
+
+        if #entries < 2 then
+                return
+        end
+
+        zone = zone or {}
+        local center = zone.center or Vector3.new(0, 0, 0)
+        local radius = zone.radius or 30
+
+        local axis
+        local firstPos = entries[1].root.Position
+        for i = 2, #entries do
+                local diff = Vector3.new(
+                        entries[i].root.Position.X - firstPos.X,
+                        0,
+                        entries[i].root.Position.Z - firstPos.Z
+                )
+                if diff.Magnitude > 0.1 then
+                        axis = diff.Unit
+                        break
+                end
+        end
+
+        axis = axis or Vector3.new(1, 0, 0)
+        local perp = Vector3.new(-axis.Z, 0, axis.X)
+        if perp.Magnitude < 1e-3 then
+                perp = Vector3.new(0, 0, 1)
+        else
+                perp = perp.Unit
+        end
+
+        local maxSeparation = math.min(math.max(radius * 0.75, radius - 4), radius * 0.9)
+        local minSeparation = math.min(math.max(radius * 0.3, 6), maxSeparation)
+        local separation = math.clamp(radius * 0.45, minSeparation, math.max(maxSeparation, minSeparation))
+        local safeRadius = radius * 0.9
+        local lateralHint = math.max(4, radius * 0.3)
+
+        local grouped = {}
+        local teamOrder = {}
+        local fallbackToggle = false
+
+        for _, entry in ipairs(entries) do
+                local teamValue = entry.model:GetAttribute("Team")
+                if teamValue == nil then
+                        teamValue = fallbackToggle and "__FallbackB" or "__FallbackA"
+                        fallbackToggle = not fallbackToggle
+                end
+
+                if grouped[teamValue] == nil then
+                        grouped[teamValue] = {}
+                        table.insert(teamOrder, teamValue)
+                end
+
+                table.insert(grouped[teamValue], entry)
+        end
+
+        local sideA = {}
+        local sideB = {}
+
+        if #teamOrder >= 2 then
+                sideA = grouped[teamOrder[1]]
+                sideB = grouped[teamOrder[2]]
+
+                for i = 3, #teamOrder do
+                        local bucket = grouped[teamOrder[i]]
+                        local dest = (#sideA <= #sideB) and sideA or sideB
+                        for _, entry in ipairs(bucket) do
+                                table.insert(dest, entry)
+                        end
+                end
+        else
+                for index, entry in ipairs(entries) do
+                        if index % 2 == 1 then
+                                table.insert(sideA, entry)
+                        else
+                                table.insert(sideB, entry)
+                        end
+                end
+        end
+
+        if #sideB == 0 and #sideA > 1 then
+                for i = #sideA, math.floor(#sideA / 2) + 1, -1 do
+                        table.insert(sideB, table.remove(sideA, i))
+                end
+        end
+
+        local function computeStride(count)
+                if count <= 1 then
+                        return 0
+                end
+
+                local availableSquared = math.max((safeRadius * safeRadius) - (separation * separation), 0)
+                local maxPerp = math.sqrt(availableSquared)
+                if maxPerp <= 0 then
+                        return 0
+                end
+
+                local suggested = (maxPerp * 2) / (count - 1)
+                return math.min(lateralHint, suggested)
+        end
+
+        local function placeGroup(group, directionSign)
+                local count = #group
+                if count == 0 then
+                        return
+                end
+
+                local stride = computeStride(count)
+                local basePosition = center + axis * (separation * directionSign)
+                local facingTarget = center - axis * (separation * directionSign)
+                local startOffset = -stride * ((count - 1) * 0.5)
+
+                for idx, entry in ipairs(group) do
+                        local offsetAmount = startOffset + (idx - 1) * stride
+                        local offset = perp * offsetAmount
+                        local y = entry.root.Position.Y
+                        local targetPos = Vector3.new(basePosition.X + offset.X, y, basePosition.Z + offset.Z)
+                        local lookAt = Vector3.new(facingTarget.X, y, facingTarget.Z)
+                        entry.model:PivotTo(CFrame.lookAt(targetPos, lookAt))
+                end
+        end
+
+        placeGroup(sideA, -1)
+        placeGroup(sideB, 1)
+end
+
 local function broadcastCombatCameraState(participantStore, isActive)
         if not CombatCameraToggleRemote then
                 return
@@ -785,56 +943,41 @@ function CombatManager.StartCombat(participants, maybeOptsOrCb, maybeCb)
 
 	onCombatEndCallbacks[combatId] = onCompleteCallback
 
-	local combatData = {
-		id = combatId,
-		participants = {},
-		teams = {},
-		startTime = tick(),
-		zone = nil
-	}
+        local resolvedParticipants = {}
+        for _, entry in ipairs(participants) do
+                local model = entry
+                if typeof(entry) == "table" then
+                        model = entry.instance or entry.model or entry.monster
+                end
 
-	combatData.zone = COMBAT_ZONE.Create(combatId, participants, opts)
+                if typeof(model) == "Instance" and model:IsA("Model") then
+                        table.insert(resolvedParticipants, model)
+                end
+        end
 
+        local combatData = {
+                id = combatId,
+                participants = {},
+                teams = {},
+                startTime = tick(),
+                zone = nil
+        }
 
-	for _, p in ipairs(combatData.participants) do
-		if p.instance and p.instance.Parent then
-			EnhancedMovement.InitializeMonster(p.instance)
-			EnhancedMovement.SetZone(p.instance, combatData.zone) -- NEW
-		end
-	end
+        combatData.zone = COMBAT_ZONE.Create(combatId, resolvedParticipants, opts)
 
-	local function safeRoot(model)
-		return model.PrimaryPart or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart")
-	end
+        orientParticipantsForCombat(resolvedParticipants, combatData.zone)
 
-	local n = #combatData.participants
-	if n > 0 then
-		local center = combatData.zone.center
-		local radius = math.max(6, (combatData.zone.radius or 30) * 0.75)
-		local baseAngle = math.random() * math.pi * 2
+        for _, model in ipairs(resolvedParticipants) do
+                if model.Parent then
+                        EnhancedMovement.InitializeMonster(model)
+                        EnhancedMovement.SetZone(model, combatData.zone)
+                end
+        end
 
-		-- Compute ring slots
-		local slots = table.create(n)
-		for i = 1, n do
-			local angle = baseAngle + ((i - 1) * (2 * math.pi / n))
-			local pos = center + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
-			slots[i] = pos
-		end
+        participants = resolvedParticipants
 
-		-- Teleport + face opposite slot (i ↔ i + n/2)
-		for i, profile in ipairs(combatData.participants) do
-			local root = safeRoot(profile.instance)
-			if root then
-				local myPos = slots[i]
-				local oppositeIndex = ((i - 1 + math.floor(n / 2)) % n) + 1
-				local lookAt = slots[oppositeIndex]
-				profile.instance:PivotTo(CFrame.lookAt(myPos, Vector3.new(lookAt.X, myPos.Y, lookAt.Z)))
-			end
-		end
-	end
-
-	for _, monsterInstance in ipairs(participants) do
-		if not monsterInstance or not monsterInstance.Parent then continue end
+        for _, monsterInstance in ipairs(participants) do
+                if not monsterInstance or not monsterInstance.Parent then continue end
 		_G.STATES:RemoveState( monsterInstance, "Following")
 		local participantId = monsterInstance:GetAttribute("OwnerId") or monsterInstance.Name
 		local team = monsterInstance:GetAttribute("Team") or 1
