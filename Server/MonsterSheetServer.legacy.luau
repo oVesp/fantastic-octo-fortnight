@@ -1,6 +1,39 @@
 -- Server: MonsterDataHandler
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local TrackValuesNormalize
+do
+        local ok, normalize = pcall(function()
+                local data = ServerScriptService:FindFirstChild("Data")
+                if not data then
+                        return nil
+                end
+
+                local shared = data:FindFirstChild("Shared")
+                if not shared then
+                        return nil
+                end
+
+                local dataStorage = shared:FindFirstChild("DataStorage")
+                if not dataStorage then
+                        return nil
+                end
+
+                local trackValues = dataStorage:FindFirstChild("TrackValues")
+                if not trackValues then
+                        return nil
+                end
+
+                local module = require(trackValues)
+                return module and module.normalize
+        end)
+
+        if ok and typeof(normalize) == "function" then
+                TrackValuesNormalize = normalize
+        end
+end
 
 -- Create RemoteEvents
 local GetMonsterDataEvent = Instance.new("RemoteEvent")
@@ -31,18 +64,38 @@ local function DeepCopy(value, seen)
                 return value
         end
 
-        local mt = getmetatable(value)
-        if typeof(mt) == "table" and mt.__stg then
-                value = mt.__stg
+        seen = seen or {}
+
+        local original = value
+
+        if TrackValuesNormalize then
+                local ok, normalized = pcall(TrackValuesNormalize, value)
+                if ok and normalized ~= nil then
+                        value = normalized
+                end
         end
 
-        seen = seen or {}
+        if typeof(value) == "table" then
+                local mt = getmetatable(value)
+                if typeof(mt) == "table" and mt.__stg then
+                        value = mt.__stg
+                end
+        end
+
+        if seen[original] then
+                return seen[original]
+        end
+
         if seen[value] then
                 return seen[value]
         end
 
         local copy = {}
-        seen[value] = copy
+        seen[original] = copy
+
+        if value ~= original then
+                seen[value] = copy
+        end
 
         for k, v in pairs(value) do
                 local newKey = DeepCopy(k, seen)
