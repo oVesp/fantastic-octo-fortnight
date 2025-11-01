@@ -26,19 +26,29 @@ local function findMonsterByOwnerId(ownerId)
 end
 
 -- Handle data requests
-local function DeepCopy(tbl)
-        if typeof(tbl) ~= "table" then
-                return tbl
+local function DeepCopy(value, seen)
+        if typeof(value) ~= "table" then
+                return value
+        end
+
+        local mt = getmetatable(value)
+        if typeof(mt) == "table" and mt.__stg then
+                value = mt.__stg
+        end
+
+        seen = seen or {}
+        if seen[value] then
+                return seen[value]
         end
 
         local copy = {}
-        for k, v in tbl do
-                if typeof(v) == "table" then
-                        copy[k] = DeepCopy(v)
-                else
-                        copy[k] = v
-                end
+        seen[value] = copy
+
+        for k, v in pairs(value) do
+                local newKey = DeepCopy(k, seen)
+                copy[newKey] = DeepCopy(v, seen)
         end
+
         return copy
 end
 
