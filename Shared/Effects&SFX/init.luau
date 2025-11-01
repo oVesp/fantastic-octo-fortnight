@@ -218,6 +218,517 @@ function effects.TrailEffect(info)
 	end
 end
 
+local function resolveOffsetCFrame(offset)
+        if not offset then
+                return CFrame.new()
+        end
+        local kind = typeof(offset)
+        if kind == "CFrame" then
+                return offset
+        end
+        if kind == "Vector3" then
+                return CFrame.new(offset)
+        end
+        if kind == "table" then
+                if offset.cframe or offset.CFrame then
+                        return offset.cframe or offset.CFrame
+                end
+                if offset.vector or offset.Vector then
+                        local vec = offset.vector or offset.Vector
+                        return CFrame.new(vec)
+                end
+                local x = offset.x or offset[1]
+                local y = offset.y or offset[2]
+                local z = offset.z or offset[3]
+                if x or y or z then
+                        return CFrame.new(x or 0, y or 0, z or 0)
+                end
+        end
+        return CFrame.new()
+end
+
+local function resolveInstanceCFrame(value)
+        if not value then
+                return nil
+        end
+        local kind = typeof(value)
+        if kind == "CFrame" then
+                return value
+        end
+        if kind == "Vector3" then
+                return CFrame.new(value)
+        end
+        if kind == "table" then
+                if value.cframe or value.CFrame then
+                        return value.cframe or value.CFrame
+                end
+                if value.position or value.Position then
+                        local pos = value.position or value.Position
+                        return CFrame.new(pos)
+                end
+                if value.instance or value.part or value.Part then
+                        return resolveInstanceCFrame(value.instance or value.part or value.Part)
+                end
+        end
+        if kind == "Instance" then
+                if value:IsA("Model") then
+                        local prim = value.PrimaryPart or value:FindFirstChildWhichIsA("BasePart")
+                        if prim then
+                                return prim.CFrame
+                        end
+                elseif value:IsA("BasePart") then
+                        return value.CFrame
+                end
+        end
+        return nil
+end
+
+local function getRootInstance(model)
+        if typeof(model) ~= "Instance" then
+                return nil
+        end
+        if model:IsA("Model") then
+                return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+        elseif model:IsA("BasePart") then
+                return model
+        end
+        return nil
+end
+
+local function gatherTargetEntries(operation, context)
+
+        local entries = {}
+        local function push(target)
+                if not target then
+                        return
+                end
+                local entry = {}
+                local kind = typeof(target)
+                if kind == "Instance" then
+                        if target:IsA("Model") then
+                                local prim = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")
+                                if prim then
+                                        entry.instance = prim
+                                        entry.cframe = prim.CFrame
+                                end
+                        elseif target:IsA("BasePart") then
+                                entry.instance = target
+                                entry.cframe = target.CFrame
+                        end
+                elseif kind == "CFrame" then
+                        entry.cframe = target
+                elseif kind == "Vector3" then
+                        entry.cframe = CFrame.new(target)
+                elseif kind == "table" then
+                        entry.instance = target.instance or target.part or target.Part
+                        entry.cframe = resolveInstanceCFrame(target.cframe or target.CFrame or target.position or target.Position)
+                        if not entry.cframe and entry.instance then
+                                entry.cframe = resolveInstanceCFrame(entry.instance)
+                        end
+                        entry.weight = target.weight
+                end
+                if not entry.cframe and entry.instance then
+                        entry.cframe = resolveInstanceCFrame(entry.instance)
+                end
+                if entry.cframe then
+                        table.insert(entries, entry)
+                end
+        end
+
+        if operation.targets then
+                if typeof(operation.targets) == "table" and (operation.targets.instance or operation.targets.part or operation.targets.Part or operation.targets.cframe) then
+                        push(operation.targets)
+                elseif typeof(operation.targets) == "table" then
+                        for _, target in ipairs(operation.targets) do
+                                push(target)
+                        end
+                elseif operation.targets == "all" then
+                        if context.TargetList then
+                                for _, target in ipairs(context.TargetList) do
+                                        push(target)
+                                end
+                        end
+                elseif operation.targets == "caster" then
+                        push(context.CasterRoot or context.CasterModel)
+                elseif operation.targets == "target" then
+                        push(context.TargetRoot or context.TargetModel)
+                else
+                        push(operation.targets)
+                end
+        end
+
+        if #entries == 0 then
+                if context.TargetRoot then
+                        push(context.TargetRoot)
+                elseif context.TargetModel then
+                        push(context.TargetModel)
+                elseif context.Options and context.Options.Targets then
+                        for _, target in ipairs(context.Options.Targets) do
+                                push(target)
+                        end
+                elseif context.Options and context.Options.TargetPosition then
+                        push(context.Options.TargetPosition)
+                end
+        end
+
+        return entries
+end
+
+local function schedule(delayTime, fn)
+        if delayTime and delayTime > 0 then
+                        task.delay(delayTime, fn)
+        else
+                fn()
+        end
+end
+
+local function dispatchStageOperation(operation, context, index)
+        local originPart = context.OriginPart
+        local casterRoot = context.CasterRoot
+        local targetRoot = context.TargetRoot
+        local offsetCF = resolveOffsetCFrame(operation.offset)
+
+        if operation.type == "emitter" then
+                local weld
+                if operation.attach == "caster" then
+                        weld = casterRoot
+                elseif operation.attach == "target" then
+                        weld = targetRoot
+                elseif operation.attach == "origin" then
+                        weld = originPart
+                elseif operation.weld then
+                        weld = operation.weld
+                else
+                        weld = originPart or casterRoot
+                end
+
+                local positionCF = nil
+                if weld and weld.CFrame then
+                        positionCF = weld.CFrame * offsetCF
+                elseif context.Options and context.Options.Position then
+                        positionCF = resolveInstanceCFrame(context.Options.Position) or CFrame.new()
+                        positionCF = positionCF * offsetCF
+                elseif originPart and originPart.CFrame then
+                        positionCF = originPart.CFrame * offsetCF
+                end
+
+                effects.EmitterEffect({
+                        Name = operation.name,
+                        Position = positionCF,
+                        Weld = (typeof(weld) == "Instance" and weld or nil),
+                        Duration = operation.duration or context.Duration,
+                })
+        elseif operation.type == "trail" then
+                if originPart then
+                        effects.TrailEffect({
+                                Name = operation.name,
+                                Part = originPart,
+                                Duration = operation.duration or context.Duration,
+                                Offset = offsetCF,
+                        })
+                end
+        elseif operation.type == "sound" or string.sub(operation.type, 1, 5) == "sound" then
+                local where = originPart or casterRoot
+                if operation.cue == "hit" and targetRoot then
+                        where = targetRoot
+                elseif operation.cue == "end" and casterRoot then
+                        where = casterRoot
+                end
+                effects.PlaySound(operation.name, {
+                        Where = where,
+                        Volume = operation.volume or context.Volume,
+                        Duration = operation.duration,
+                        FadeOutTime = operation.fadeOut,
+                        RandomPitch = operation.randomPitch,
+                })
+        elseif operation.type == "projectile" then
+                effects.ProjectileVolley(operation, context)
+        elseif operation.type == "arena" then
+                effects.ArenaEffect(operation, context)
+        elseif operation.type == "custom" and operation.handler then
+                operation.handler(context, operation, index)
+        end
+end
+
+function effects.ExecuteStageOperations(operations, context)
+        if not operations or not context then
+                return
+        end
+        for index, operation in ipairs(operations) do
+                schedule(operation.delay, function()
+                        dispatchStageOperation(operation, context, index)
+                end)
+        end
+end
+
+local function determineOrigin(operation, context)
+        if operation.anchor == "caster" and context.CasterRoot then
+                return context.CasterRoot.CFrame
+        end
+        if operation.anchor == "target" and context.TargetRoot then
+                return context.TargetRoot.CFrame
+        end
+        if context.OriginPart and context.OriginPart.CFrame then
+                return context.OriginPart.CFrame
+        end
+        if context.CasterRoot and context.CasterRoot.CFrame then
+                return context.CasterRoot.CFrame
+        end
+        if context.Options and context.Options.Position then
+                return resolveInstanceCFrame(context.Options.Position)
+        end
+        return nil
+end
+
+function effects.ProjectileVolley(operation, context)
+        if not operation then
+                return
+        end
+        local originCF = determineOrigin(operation, context)
+        if not originCF then
+                return
+        end
+        originCF = originCF * resolveOffsetCFrame(operation.offset)
+
+        local targets = gatherTargetEntries(operation, context)
+        local originPos = originCF.Position
+        local baseForward = originCF.LookVector.Magnitude > 0 and originCF.LookVector.Unit or Vector3.new(0, 0, -1)
+        local baseRight = originCF.RightVector.Magnitude > 0 and originCF.RightVector.Unit or Vector3.new(1, 0, 0)
+
+        local desiredCount = operation.count or #targets
+        if desiredCount and desiredCount < 1 then
+                desiredCount = 1
+        end
+        if not desiredCount or desiredCount == 0 then
+                desiredCount = math.max(#targets, 1)
+        end
+
+        local spreadRad = math.rad(operation.spreadAngle or 0)
+        local assignments = {}
+        for i = 1, desiredCount do
+                local entry = {
+                        target = targets[i],
+                }
+                if entry.target and entry.target.cframe then
+                        local dir = entry.target.cframe.Position - originPos
+                        if dir.Magnitude < 0.001 then
+                                dir = baseForward
+                        else
+                                dir = dir.Unit
+                        end
+                        entry.direction = dir
+                end
+                assignments[i] = entry
+        end
+
+        for index, entry in ipairs(assignments) do
+                if not entry.direction then
+                        local angle
+                        if operation.randomize then
+                                angle = (math.random() - 0.5) * spreadRad * 2
+                        else
+                                local t = (#assignments == 1) and 0.5 or ((index - 1) / math.max(#assignments - 1, 1))
+                                angle = -spreadRad / 2 + spreadRad * t
+                        end
+                        local dir = baseForward
+                        if spreadRad ~= 0 then
+                                dir = (baseForward * math.cos(angle) + baseRight * math.sin(angle)).Unit
+                        end
+                        entry.direction = dir
+                end
+        end
+
+        for index, entry in ipairs(assignments) do
+                local delayTime = (operation.fireDelay or 0) * (index - 1)
+                schedule(delayTime, function()
+                        local spawnPos = originPos
+                        if operation.spawnRadius and operation.spawnRadius > 0 then
+                                local angle = operation.randomize and math.random() * math.pi * 2 or ((index - 1) / math.max(#assignments, 1)) * math.pi * 2
+                                spawnPos += baseRight * math.cos(angle) * operation.spawnRadius
+                                spawnPos += originCF.UpVector * math.sin(angle) * (operation.spawnRadius * 0.25)
+                        end
+                        local spawnCF = CFrame.new(spawnPos, spawnPos + entry.direction)
+
+                        local poolName = operation.template or operation.name
+                        local projectile
+                        local pooled = false
+                        if poolName then
+                                projectile = EffectPool:GetInstance(poolName, "Projectile")
+                                if projectile then
+                                        pooled = true
+                                end
+                        end
+                        if not projectile then
+                                projectile = Instance.new("Part")
+                                projectile.Name = operation.template or "Projectile"
+                                projectile.Shape = Enum.PartType.Ball
+                                projectile.Size = Vector3.new(0.5, 0.5, 0.5)
+                                projectile.Material = Enum.Material.Neon
+                                projectile.Color = operation.color or Color3.fromRGB(210, 170, 255)
+                                projectile.CanCollide = false
+                                projectile.Anchored = true
+                        end
+
+                        projectile.CFrame = spawnCF
+                        projectile.Parent = workspace.Debris
+
+                        if operation.trailName then
+                                effects.TrailEffect({
+                                        Name = operation.trailName,
+                                        Part = projectile,
+                                        Duration = operation.duration,
+                                })
+                        end
+
+                        local targetEntry = entry.target
+                        local targetPos = targetEntry and targetEntry.cframe and targetEntry.cframe.Position
+                        if not targetPos then
+                                local travelDistance = operation.range or (operation.speed or 80) * (operation.duration or 0.6)
+                                targetPos = spawnPos + entry.direction * travelDistance
+                        end
+
+                        local speed = operation.speed or 80
+                        local duration = operation.duration
+                        if not duration then
+                                local distance = (targetPos - spawnPos).Magnitude
+                                if speed > 0 then
+                                        duration = distance / speed
+                                else
+                                        duration = 0.6
+                                end
+                        end
+                        duration = math.max(duration, 0.05)
+
+                        local currentTargetPos = targetPos
+                        local startTime = tick()
+                        local finished = false
+                        local previousPos = spawnPos
+
+                        local connection
+                        connection = RS.Heartbeat:Connect(function(dt)
+                                if finished then
+                                        return
+                                end
+                                local elapsed = tick() - startTime
+                                local progress = math.clamp(elapsed / duration, 0, 1)
+
+                                if operation.homing and targetEntry and targetEntry.instance and targetEntry.instance.Parent then
+                                        local updated = targetEntry.instance.Position
+                                        local turnRate = math.clamp((operation.homing.turnRate or 20) * dt / 45, 0, 1)
+                                        currentTargetPos = currentTargetPos:Lerp(updated, turnRate)
+                                end
+
+                                local basePos = spawnPos:Lerp(currentTargetPos, progress)
+                                if operation.curve and operation.curve.amplitude and operation.curve.amplitude ~= 0 then
+                                        local axis = operation.curve.axis or Vector3.new(0, 1, 0)
+                                        local frequency = operation.curve.frequency or 1
+                                        local amplitude = operation.curve.amplitude
+                                        local offset = math.sin(progress * math.pi * frequency) * amplitude
+                                        local lookCF = CFrame.lookAt(spawnPos, currentTargetPos)
+                                        basePos += lookCF:VectorToWorldSpace(axis.Unit * offset)
+                                end
+
+                                local nextProgress = math.clamp((elapsed + dt) / duration, 0, 1)
+                                local lookPos = spawnPos:Lerp(currentTargetPos, nextProgress)
+                                projectile.CFrame = CFrame.lookAt(basePos, lookPos)
+                                previousPos = basePos
+
+                                if progress >= 1 then
+                                        finished = true
+                                        connection:Disconnect()
+
+                                        if operation.hitSound then
+                                                effects.PlaySound(operation.hitSound, { Where = projectile, Duration = 0.35 })
+                                        end
+                                        if operation.effectOnImpact then
+                                                effects.EmitterEffect({ Name = operation.effectOnImpact, Position = projectile.CFrame, Duration = operation.impactDuration or 0.5 })
+                                        end
+                                        if operation.onImpact then
+                                                task.spawn(operation.onImpact, context, projectile.CFrame)
+                                        end
+
+                                        if pooled then
+                                                EffectPool:ReturnInstance(poolName, projectile, "Projectile")
+                                        else
+                                                projectile:Destroy()
+                                        end
+                                end
+                        end)
+
+                        if not pooled then
+                                Debris:AddItem(projectile, duration + 2)
+                        end
+                end)
+        end
+end
+
+function effects.ArenaEffect(operation, context)
+        if not operation then
+                return
+        end
+        local anchorCF = resolveInstanceCFrame(operation.center) or (context.TargetRoot and context.TargetRoot.CFrame) or (context.CasterRoot and context.CasterRoot.CFrame) or (context.OriginPart and context.OriginPart.CFrame)
+        if not anchorCF then
+                return
+        end
+        anchorCF = anchorCF * resolveOffsetCFrame(operation.offset)
+
+        local anchor = Instance.new("Part")
+        anchor.Name = "ArenaAnchor"
+        anchor.Anchored = true
+        anchor.CanCollide = false
+        anchor.Transparency = 1
+        anchor.Size = Vector3.new(1, 1, 1)
+        anchor.CFrame = anchorCF
+        anchor.Parent = workspace.Debris
+
+        if operation.attach == "caster" and context.CasterRoot then
+                anchor.Anchored = false
+                local weld = Instance.new("WeldConstraint")
+                weld.Part0 = context.CasterRoot
+                weld.Part1 = anchor
+                weld.Parent = anchor
+        elseif operation.attach == "target" and context.TargetRoot then
+                anchor.Anchored = false
+                local weld = Instance.new("WeldConstraint")
+                weld.Part0 = context.TargetRoot
+                weld.Part1 = anchor
+                weld.Parent = anchor
+        end
+
+        if operation.effectName then
+                effects.EmitterEffect({
+                        Name = operation.effectName,
+                        Position = anchor.CFrame,
+                        Weld = anchor,
+                        Duration = operation.duration or context.Duration or 1,
+                })
+        end
+        if operation.sfx then
+                effects.PlaySound(operation.sfx, {
+                        Where = anchor,
+                        Duration = operation.duration,
+                })
+        end
+
+        if operation.pulses then
+                for pulseIndex = 0, operation.pulses - 1 do
+                        schedule((operation.interval or 0.4) * pulseIndex, function()
+                                if operation.effectName then
+                                        effects.EmitterEffect({
+                                                Name = operation.effectName,
+                                                Position = anchor.CFrame,
+                                                Weld = anchor,
+                                                Duration = operation.pulseDuration or 0.5,
+                                        })
+                                end
+                        end)
+                end
+        end
+
+        Debris:AddItem(anchor, (operation.duration or 1) + 2)
+end
+
+
 -- AuraEffect com pooling
 function effects.AuraEffect(info)
 	if not info or not info.Name or not info.LocationParts then return end
@@ -998,23 +1509,72 @@ local function safeSfx(name, where)
 end
 
 function effects.PlayMovePackage(stage: "cast"|"travel"|"impact"|"endcast", moveId: string, where: Instance?, opts: table?)
-	local pack, handler = MoveVFX.Resolve(moveId)
+        opts = opts or {}
+        local pack, handler = MoveVFX.Resolve(moveId, opts.Modifiers)
 
-	-- Advanced stage hook (if present) gets first shot
-	if handler and type(handler[stage]) == "function" then
-		local ok = pcall(handler[stage], moveId, where, opts or {})
-		if ok then return end -- advanced handled it
-	end
+        -- Advanced stage hook (if present) gets first shot
+        if handler and type(handler[stage]) == "function" then
+                local ok = pcall(handler[stage], moveId, where, opts)
+                if ok then return end -- advanced handled it
+        end
 
-	-- Default/template behavior
-	local info = pack and pack[stage]
-	if not info then return end
-	if info.effect then safeEffect(info.effect, where, opts) end
-	if info.trail  then safeTrail(info.trail, where, opts) end
-	if info.sfxStart then safeSfx(info.sfxStart, where) end
-	if info.sfxLoop  then safeSfx(info.sfxLoop,  where) end
-	if info.sfxHit   then safeSfx(info.sfxHit,   where) end
-	if info.sfxEnd   then safeSfx(info.sfxEnd,   where) end
+        local info = pack and pack[stage]
+        if not info then return end
+
+        local casterModel = opts.CasterModel or opts.Caster
+        local targetModel = opts.TargetModel or opts.Target
+        local casterRoot = opts.CasterRoot or getRootInstance(casterModel)
+        local targetRoot = opts.TargetRoot or getRootInstance(targetModel)
+
+        local originPart = where
+        if originPart and typeof(originPart) == "Instance" and originPart:IsA("Model") then
+                originPart = getRootInstance(originPart)
+        end
+        if not originPart then
+                originPart = getRootInstance(opts.Origin) or casterRoot
+        end
+
+        local targetList = nil
+        local rawTargets = opts.TargetList or opts.Targets
+        if rawTargets then
+                targetList = {}
+                for _, target in ipairs(rawTargets) do
+                        table.insert(targetList, getRootInstance(target) or target)
+                end
+        end
+
+        local context = {
+                StageName = stage,
+                MoveId = moveId,
+                OriginPart = originPart,
+                CasterModel = casterModel,
+                TargetModel = targetModel,
+                CasterRoot = casterRoot,
+                TargetRoot = targetRoot,
+                Duration = opts.Duration,
+                Volume = opts.Volume,
+                Options = opts,
+                TargetList = targetList,
+        }
+
+        if info.operations and effects.ExecuteStageOperations then
+                effects.ExecuteStageOperations(info.operations, context)
+        else
+                if info.effect then safeEffect(info.effect, originPart or where, opts) end
+                if info.trail then safeTrail(info.trail, originPart or where, opts) end
+                if info.sfxStart then safeSfx(info.sfxStart, originPart or where) end
+                if info.sfxLoop then safeSfx(info.sfxLoop, originPart or where) end
+                if info.sfxHit then
+                        if targetRoot then
+                                safeSfx(info.sfxHit, targetRoot)
+                        else
+                                safeSfx(info.sfxHit, originPart or where)
+                        end
+                end
+                if info.sfxEnd then
+                        safeSfx(info.sfxEnd, casterRoot or originPart or where)
+                end
+        end
 end
 
 
